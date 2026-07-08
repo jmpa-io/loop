@@ -53,20 +53,7 @@ loop-logs:
 
 loop-status: ## Loop: show current loop state (status, last target, completed/failed).
 loop-status:
-	@python3 -c " \
-import json, sys, os; \
-path = 'loop-run-state.json'; \
-if not os.path.exists(path): \
-    print('loop-run-state.json not found — loop has not been started yet.'); sys.exit(0); \
-r = json.load(open(path)); \
-print(f\"Status:    {r.get('status')}\"); \
-print(f\"Last run:  {r.get('last_run_log')} ({r.get('last_result')})\"); \
-print(f\"Completed: {r.get('completed_targets')}\"); \
-print(f\"Failed:    {r.get('failed_targets')}\"); \
-print(f\"Attempts:  {r.get('attempts')}\"); \
-ha = r.get('human_action'); \
-print(f\"NEEDS HUMAN: {ha}\") if ha else None; \
-"
+	@python3 $(LOOP_DIR)bin/loop-status.py
 
 loop-ack: ## Loop: acknowledge a human action — resumes a paused loop.
 loop-ack:
