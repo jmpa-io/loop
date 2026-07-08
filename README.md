@@ -67,19 +67,13 @@ runs/
 
 All targets are provided by `include .loop/Makefile`.
 
-| Target | Runs on | What it does |
-|---|---|---|
-| `make loop-start` | Runner | Start resilient loop in a detached tmux session |
-| `make loop-resilient` | Runner | Run resilient wrapper directly (auto-restart + AWS refresh) |
-| `make loop-run` | Runner | Run core loop directly (no auto-restart) |
-| `make loop-attach` | Runner | Attach to the running tmux session |
-| `make loop-stop` | Runner | Kill the tmux session |
-| `make loop-logs` | Either | Tail the latest run log |
-| `make loop-status` | Either | Print current status, completed/failed targets, attempts |
-| `make loop-ack` | Mac | Acknowledge a human action and resume the loop |
-| `make loop-reset` | Mac | Reset all state — all targets re-run from scratch |
-| `make loop-opencode` | Mac | Start the OpenCode monitoring loop |
-| `make loop-trim-context` | Mac | Trim loop-context.md to 500 lines, archive overflow |
+| Target | What it does |
+|---|---|
+| `make loop-start` | Start the resilient loop in a detached tmux session |
+| `make loop-stop` | Kill the tmux session |
+| `make loop-attach` | Attach to the running tmux session to watch output |
+| `make loop-status` | Print current status, completed/failed targets, attempt counts |
+| `make loop-reset` | Clear all state — all targets re-run from scratch on next `loop-start` |
 
 ---
 
