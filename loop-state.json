@@ -5,5 +5,6 @@
   "targets": [],
   "deps": {},
   "max_attempts": 10,
-  "human_action": null
+  "human_action": null,
+  "blocker_patterns": []
 }
