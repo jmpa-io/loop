@@ -2,7 +2,7 @@
 # loop-reset.sh — reset loop state so all targets re-run from scratch.
 
 set -uo pipefail
-REPO="$(dirname "$(realpath "$0")")/.."
+REPO="$(dirname "$(realpath "$0")")/../.."
 cd "$REPO" || exit 1
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 

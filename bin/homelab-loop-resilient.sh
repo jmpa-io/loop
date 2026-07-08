@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-REPO_DIR="$(dirname "$(realpath "$0")")/.."
+REPO_DIR="$(dirname "$(realpath "$0")")/../.."
 REPO_DIR="$(realpath "$REPO_DIR")"
 RESTART_DELAY=10
 AWS_RETRY_DELAY=60 # check every 60s when waiting for AWS auth

@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-REPO_DIR="$(dirname "$(realpath "$0")")/.."
+REPO_DIR="$(dirname "$(realpath "$0")")/../.."
 REPO_DIR="$(realpath "$REPO_DIR")"
 CONTEXT_FILE="$REPO_DIR/loop-context.md"
 ARCHIVE_FILE="$REPO_DIR/docs/loop-context-archive.md"

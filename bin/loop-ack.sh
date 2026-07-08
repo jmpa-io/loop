@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-REPO_DIR="$(dirname "$(realpath "$0")")/.."
+REPO_DIR="$(dirname "$(realpath "$0")")/../.."
 REPO_DIR="$(realpath "$REPO_DIR")"
 BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
 

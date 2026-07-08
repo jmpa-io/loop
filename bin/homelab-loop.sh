@@ -28,7 +28,7 @@ set -uo pipefail
 # with '|| true' to keep running even when individual targets fail.
 # Critical state-file reads have explicit error guards below.
 
-REPO_DIR="$(dirname "$(realpath "$0")")/.."
+REPO_DIR="$(dirname "$(realpath "$0")")/../.."
 REPO_DIR="$(realpath "$REPO_DIR")"
 RUN_STATE="$REPO_DIR/loop-run-state.json"
 OC_STATE="$REPO_DIR/loop-state.json"

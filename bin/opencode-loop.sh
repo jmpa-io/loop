@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-REPO_DIR="$(dirname "$(realpath "$0")")/.."
+REPO_DIR="$(dirname "$(realpath "$0")")/../.."
 REPO_DIR="$(realpath "$REPO_DIR")"
 RUN_STATE="$REPO_DIR/loop-run-state.json"
 OC_STATE="$REPO_DIR/loop-state.json"
