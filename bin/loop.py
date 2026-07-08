@@ -27,15 +27,12 @@ FIX_POLL = 10  # seconds between polls when waiting
 
 
 # ---------------------------------------------------------------------------
-# Human / AWS wait
+# Human wait
 # ---------------------------------------------------------------------------
 
 
 def wait_for_human(branch: str, message: str) -> None:
-    """
-    Block until fix_pushed=true is set in loop-state.json.
-    Used when the loop needs a human to act (e.g. any credential expiry).
-    """
+    """Block until fix_pushed=true is set in loop-state.json."""
     lib.log_fail(f"Needs human: {message}")
     run = lib.load_run_state(REPO)
     run["status"] = "needs_human"
@@ -67,7 +64,7 @@ def wait_for_human(branch: str, message: str) -> None:
 
 def run_target(target: str, branch: str) -> bool:
     """
-    Run `make <target>` once.  Returns True on success, False on failure.
+    Run `make <target>` once. Returns True on success, False on failure.
     Handles retry signalling, blocker detection, and state updates.
     """
     run = lib.load_run_state(REPO)
@@ -91,24 +88,14 @@ def run_target(target: str, branch: str) -> bool:
 
     if result.returncode == 0:
         lib.log_ok(f"{target} succeeded")
-        run = lib.load_run_state(REPO)
-        run.setdefault("completed_targets", [])
-        if target not in run["completed_targets"]:
-            run["completed_targets"].append(target)
-        run.setdefault("failed_targets", [])
-        if target in run["failed_targets"]:
-            run["failed_targets"].remove(target)
-        run.setdefault("attempts", {})
-        run["attempts"][target] = 1
-        run["last_result"] = "success"
-        run["last_run_log"] = target
+        run = lib.apply_target_success(lib.load_run_state(REPO), target)
         lib.save_run_state(REPO, run)
         lib.push_run_state(REPO, branch, f"{target} succeeded")
         return True
 
     # ── Failure path ────────────────────────────────────────────────────────
 
-    # Check for hardware / configurable blockers in the latest run log
+    # Check for configurable blockers in the latest run log
     runs_dir = REPO / "runs"
     logs = sorted(
         runs_dir.glob(f"{target}-*.log"), key=lambda p: p.stat().st_mtime, reverse=True
@@ -128,27 +115,20 @@ def run_target(target: str, branch: str) -> bool:
             lib.push_run_state(REPO, branch, f"{target} — blocker — needs human")
             return False
 
-    lib.log_fail(f"{target} failed (attempt {attempt}/{max_att})")
-    run = lib.load_run_state(REPO)
-    run.setdefault("attempts", {})
-    run["attempts"][target] = run["attempts"].get(target, 1) + 1
-    run["last_result"] = "failed"
-    run["last_run_log"] = target
+    run, permanently_failed = lib.apply_target_failure(
+        lib.load_run_state(REPO), target, max_att
+    )
     lib.save_run_state(REPO, run)
-    lib.push_run_state(REPO, branch, f"{target} failed — attempt {attempt}")
 
-    if attempt >= max_att:
+    if permanently_failed:
         lib.log_fail(f"{target} hit max retries — marking permanently failed")
-        run = lib.load_run_state(REPO)
-        run.setdefault("failed_targets", [])
-        if target not in run["failed_targets"]:
-            run["failed_targets"].append(target)
-        run["attempts"][target] = 1
-        lib.save_run_state(REPO, run)
         lib.push_run_state(
             REPO, branch, f"{target} permanently failed after {max_att} retries"
         )
         return False
+
+    lib.log_fail(f"{target} failed (attempt {attempt}/{max_att})")
+    lib.push_run_state(REPO, branch, f"{target} failed — attempt {attempt}")
 
     # Signal OpenCode then wait before retrying
     oc = lib.load_oc_state(REPO)
@@ -188,36 +168,10 @@ def run_target(target: str, branch: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def initialise_run_state(branch: str) -> None:
+def initialise(branch: str) -> None:
     oc = lib.load_oc_state(REPO)
-    targets = oc.get("targets", [])
-
-    if not RUN_STATE_PATH.exists():
-        run = {
-            "status": "running",
-            "targets": targets,
-            "completed_targets": [],
-            "failed_targets": [],
-            "attempts": {},
-            "max_attempts": oc.get("max_attempts", 10),
-            "last_result": None,
-            "last_run_log": None,
-            "human_action": None,
-        }
-    else:
-        run = lib.load_run_state(REPO)
-        run.setdefault("failed_targets", [])
-        run.setdefault("attempts", {})
-        run["targets"] = targets
-        run["max_attempts"] = oc.get("max_attempts", 10)
-        # Preserve needs_human across restarts
-        if run.get("status") in ("idle", None):
-            run["status"] = "running"
-            run["human_action"] = None
-        # Remove legacy sequential fields
-        for k in ("current_target", "current_index", "current_attempt"):
-            run.pop(k, None)
-
+    existing = lib.load_run_state(REPO) if RUN_STATE_PATH.exists() else None
+    run = lib.initialise_run_state(existing, oc)
     lib.save_run_state(REPO, run)
     lib.push_run_state(REPO, branch, "initialised loop")
 
@@ -232,8 +186,6 @@ def main() -> None:
     branch = lib.current_branch(REPO)
 
     lib.log(f"Starting loop — branch: {branch}")
-
-    # Update submodules
     lib.git(REPO, "submodule", "update", "--init", "--recursive", "--quiet")
 
     oc = lib.load_oc_state(REPO)
@@ -241,13 +193,25 @@ def main() -> None:
         lib.log_fail("loop-state.json has no targets — nothing to do")
         sys.exit(1)
 
-    initialise_run_state(branch)
+    initialise(branch)
     lib.log("Loop initialised. Ready targets will run now.")
 
     while True:
         lib.git_pull(REPO, branch)
         run = lib.load_run_state(REPO)
         oc = lib.load_oc_state(REPO)
+
+        # ── Stop / pause signals ────────────────────────────────────────────
+        if lib.should_stop(oc):
+            lib.log("Stop signal received — exiting")
+            oc = lib.clear_signals(oc)
+            lib.save_oc_state(REPO, oc)
+            sys.exit(0)
+
+        if lib.should_pause(oc):
+            lib.log_wait("Pause signal received — waiting for resume...")
+            time.sleep(FIX_POLL)
+            continue
 
         # ── Needs-human pause ───────────────────────────────────────────────
         if run.get("status") == "needs_human":
@@ -294,16 +258,13 @@ def main() -> None:
             sys.exit(0)
 
         if not ready:
-            lib.log_wait(
-                "Nothing ready to run — waiting for dependencies to resolve..."
-            )
+            lib.log_wait("Nothing ready to run — waiting for dependencies...")
             time.sleep(FIX_POLL)
             continue
 
         # ── Run ready targets ────────────────────────────────────────────────
         for target in ready:
             run_target(target, branch)
-            # Stop if a blocker fired mid-loop
             run = lib.load_run_state(REPO)
             if run.get("status") == "needs_human":
                 lib.log_wait("Loop entered needs_human — stopping ready-target run")

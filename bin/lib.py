@@ -315,3 +315,128 @@ def parse_last_word(output: str) -> str:
 def is_already_completed(target: str, run_state: dict) -> bool:
     """True if target is already in completed_targets (prevents re-running)."""
     return target in run_state.get("completed_targets", [])
+
+
+# ---------------------------------------------------------------------------
+# Pure state-transition functions (no I/O — fully testable)
+# ---------------------------------------------------------------------------
+
+
+def apply_target_success(run_state: dict, target: str) -> dict:
+    """
+    Return an updated run_state reflecting a successful target run.
+    Does not write to disk — caller is responsible for saving.
+    """
+    run = dict(run_state)
+    run.setdefault("completed_targets", [])
+    if target not in run["completed_targets"]:
+        run["completed_targets"] = run["completed_targets"] + [target]
+    run.setdefault("failed_targets", [])
+    if target in run["failed_targets"]:
+        run["failed_targets"] = [t for t in run["failed_targets"] if t != target]
+    run.setdefault("attempts", {})
+    run["attempts"] = {**run["attempts"], target: 1}
+    run["last_result"] = "success"
+    run["last_run_log"] = target
+    return run
+
+
+def apply_target_failure(
+    run_state: dict, target: str, max_attempts: int
+) -> tuple[dict, bool]:
+    """
+    Return (updated_run_state, permanently_failed).
+
+    permanently_failed is True when attempt count has reached max_attempts,
+    in which case the target is added to failed_targets.
+    Does not write to disk — caller is responsible for saving.
+    """
+    run = dict(run_state)
+    run.setdefault("attempts", {})
+    attempt = run["attempts"].get(target, 1)
+    run["attempts"] = {**run["attempts"], target: attempt + 1}
+    run["last_result"] = "failed"
+    run["last_run_log"] = target
+
+    permanently_failed = attempt >= max_attempts
+    if permanently_failed:
+        run.setdefault("failed_targets", [])
+        if target not in run["failed_targets"]:
+            run["failed_targets"] = run["failed_targets"] + [target]
+        run["attempts"] = {**run["attempts"], target: 1}
+
+    return run, permanently_failed
+
+
+def initialise_run_state(existing_run: dict | None, oc_state: dict) -> dict:
+    """
+    Return a fresh or updated run_state based on oc_state configuration.
+
+    If existing_run is None (first start), returns a blank running state.
+    If existing_run is provided (restart), preserves completed/failed targets
+    and updates targets + max_attempts from oc_state.
+    Does not write to disk — caller is responsible for saving.
+    """
+    targets = oc_state.get("targets", [])
+    max_att = oc_state.get("max_attempts", 10)
+
+    if existing_run is None:
+        return {
+            "status": "running",
+            "targets": targets,
+            "completed_targets": [],
+            "failed_targets": [],
+            "attempts": {},
+            "max_attempts": max_att,
+            "last_result": None,
+            "last_run_log": None,
+            "human_action": None,
+        }
+
+    run = dict(existing_run)
+    run.setdefault("failed_targets", [])
+    run.setdefault("attempts", {})
+    run["targets"] = targets
+    run["max_attempts"] = max_att
+    # Only clear needs_human if status is idle/None (genuine fresh start)
+    if run.get("status") in ("idle", None):
+        run["status"] = "running"
+        run["human_action"] = None
+    # Remove legacy sequential fields
+    for k in ("current_target", "current_index", "current_attempt"):
+        run.pop(k, None)
+    return run
+
+
+def apply_stop_signal(oc_state: dict) -> dict:
+    """Return updated oc_state with stop signal set."""
+    oc = dict(oc_state)
+    oc["stop"] = True
+    oc.pop("pause", None)
+    return oc
+
+
+def apply_pause_signal(oc_state: dict) -> dict:
+    """Return updated oc_state with pause signal set."""
+    oc = dict(oc_state)
+    oc["pause"] = True
+    oc.pop("stop", None)
+    return oc
+
+
+def clear_signals(oc_state: dict) -> dict:
+    """Return updated oc_state with stop/pause signals cleared."""
+    oc = dict(oc_state)
+    oc.pop("stop", None)
+    oc.pop("pause", None)
+    return oc
+
+
+def should_stop(oc_state: dict) -> bool:
+    """True if a stop signal is set."""
+    return bool(oc_state.get("stop"))
+
+
+def should_pause(oc_state: dict) -> bool:
+    """True if a pause signal is set."""
+    return bool(oc_state.get("pause"))
