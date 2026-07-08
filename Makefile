@@ -13,17 +13,18 @@ LOOP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 loop-start: ## Loop: start the resilient loop in a detached tmux session.
 loop-start:
 	@SESSION="homelab-loop"; \
+	SCRIPT="$(LOOP_DIR)bin/homelab-loop-resilient.sh"; \
 	if pgrep -f "homelab-loop-resilient.sh" > /dev/null 2>&1; then \
 		echo "Loop is already running (PID: $$(pgrep -f homelab-loop-resilient.sh | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
 	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \
 		tmux kill-session -t "$$SESSION" 2>/dev/null || true; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "bash $(LOOP_DIR)bin/homelab-loop-resilient.sh"; \
+		tmux new-session -d -s "$$SESSION" -c "$$PWD" "bash $$SCRIPT"; \
 		echo "Loop started. Run 'make loop-attach' to watch it."; \
 	else \
 		echo "Starting loop..."; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "bash $(LOOP_DIR)bin/homelab-loop-resilient.sh"; \
+		tmux new-session -d -s "$$SESSION" -c "$$PWD" "bash $$SCRIPT"; \
 		echo "Loop started. Run 'make loop-attach' to watch it."; \
 	fi
 
