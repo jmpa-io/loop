@@ -1,0 +1,11 @@
+{
+  "status": "idle",
+  "targets": [],
+  "completed_targets": [],
+  "failed_targets": [],
+  "attempts": {},
+  "max_attempts": 10,
+  "last_result": null,
+  "last_run_log": null,
+  "human_action": null
+}

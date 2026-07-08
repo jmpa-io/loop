@@ -1,0 +1,9 @@
+# loop-state.json — owned EXCLUSIVELY by Mac (OpenCode).
+# Contains: targets, deps, max_attempts, fix_pushed.
+# The runner NEVER writes to this file.
+loop-state.json     merge=ours
+
+# loop-run-state.json — owned EXCLUSIVELY by the runner (homelab-loop.sh).
+# Contains: status, completed/failed targets, attempts, waiting_for_fix, human_action.
+# The Mac ONLY writes human_action on NEEDS_HUMAN (one-way, safe).
+loop-run-state.json merge=ours

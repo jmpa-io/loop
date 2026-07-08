@@ -1,0 +1,9 @@
+{
+  "fix_pushed": false,
+  "waiting_for_fix": false,
+  "opencode_last_fix": null,
+  "targets": [],
+  "deps": {},
+  "max_attempts": 10,
+  "human_action": null
+}
