@@ -180,8 +180,8 @@ All scripts live in `.loop/bin/` and are called via the Makefile. You do not nee
 - `python3` (3.9+)
 - `git`
 - `make` (targets invoked via `make <target>`)
-- `tmux` (for `make loop-start`)
-- `opencode` CLI (for `opencode_loop.py` — only needed on the Mac side)
+- `tmux` — required on both machines. The sender and receiver each run in a detached tmux session. Install with `brew install tmux` (macOS) or `apt install tmux` (Linux).
+- `opencode` CLI — only needed on the receiver (Mac) side, for `loop-start-receiver`
 
 ---
 
