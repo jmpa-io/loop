@@ -4,18 +4,29 @@ Dependency-aware deployment loop with OpenCode self-healing. Drop it into any re
 
 ## How it works
 
-Two processes run concurrently and communicate entirely through git commits — no sockets, no HTTP.
+Two processes run on two machines and communicate entirely through git commits — no sockets, no HTTP.
 
 ```
-[Runner machine]                         [Mac]
-loop.py  ──────── git push ──────────►  opencode_loop.py
-  runs make targets in dep order           watches for failures
-  writes loop-run-state.json               invokes OpenCode to diagnose + fix
-  reads loop-state.json                    pushes fix, sets fix_pushed=true
-  retries on fix  ◄──── git pull ───────
+[Sender — runner machine]               [Receiver — Mac]
+loop.py  ────── git push ──────────►  opencode_loop.py
+  runs make targets in dep order          watches sender-state.json for failures
+  writes sender-state.json                invokes OpenCode to diagnose + fix
+  reads receiver-state.json               pushes fix, sets fix_pushed=true
+  retries on fix  ◄──── git pull ──────
 ```
 
-`loop_resilient.py` wraps `loop.py` — if it crashes or exits non-zero, it pulls latest code and restarts it automatically. `make loop-start-sender` always runs `loop_resilient.py`.
+**File ownership is strict — no shared writes:**
+
+| File | Written by | Read by |
+|---|---|---|
+| `sender-state.json` | Sender only | Receiver |
+| `receiver-state.json` | Receiver only | Sender |
+
+This eliminates merge conflicts. Each machine only writes its own file.
+
+`loop_resilient.py` wraps `loop.py` — if it crashes or exits non-zero, it pulls latest code and restarts automatically. `make loop-start-sender` always runs `loop_resilient.py`.
+
+**Single machine:** Run both `make loop-start-sender` and `make loop-start-receiver` in separate terminals on the same machine — they communicate through the same git repo on disk.
 
 ---
 
@@ -27,16 +38,16 @@ These files are created in your **repo root** (not inside `.loop/`) when the loo
 
 | File | Owner | What it is |
 |---|---|---|
-| `loop-state.json` | You + Mac | Configuration: target list, dependency graph, max attempts, blocker patterns, and fix signals written by OpenCode |
-| `loop-run-state.json` | Runner | Runtime state: which targets completed/failed, attempt counts, current status, human action message |
-| `loop-context.md` | You + OpenCode | Shared brain — OpenCode reads this in full on every fix invocation. Contains the target table, known issues, and a history of every failure + fix applied. Prevents OpenCode repeating the same broken fix twice. You create this file; OpenCode appends to it. |
+| `receiver-state.json` | Receiver (brain) | Config + signals: target list, dependency graph, max attempts, blocker patterns, fix signals, stop/pause |
+| `sender-state.json` | Sender (runner) | Runtime state: which targets completed/failed, attempt counts, current status, human action message |
+| `loop-context.md` | You + OpenCode | Shared brain — OpenCode reads this in full on every fix invocation. Auto-created at startup if missing. |
 
 ### Generated directories (not committed)
 
 | Path | What it is |
 |---|---|
-| `runs/` | Per-target run logs written by the runner. Named `<target>-<timestamp>.log`. OpenCode reads these to diagnose failures. Also contains `resilient.log` (output of the resilient wrapper) and `opencode-loop-<timestamp>.log` (output of each OpenCode fix invocation). Add `runs/` to your `.gitignore`. |
-| `docs/loop-context-archive.md` | Auto-generated when `loop-context.md` exceeds 500 lines. The oldest entries are moved here to keep the active context file small enough for OpenCode to read in full without burning tokens. |
+| `runs/` | Per-target run logs written by the sender. Named `<target>-<timestamp>.log`. OpenCode reads these to diagnose failures. Also contains `resilient.log` and `opencode-loop-<timestamp>.log`. Add `runs/` to your `.gitignore`. |
+| `docs/loop-context-archive.md` | Auto-generated when `loop-context.md` exceeds 500 lines. Oldest entries are archived here. |
 
 ---
 
@@ -60,48 +71,20 @@ All loop make targets are now available.
 ### 3. Copy the template state files
 
 ```bash
-cp .loop/loop-state.json loop-state.json
-cp .loop/loop-run-state.json loop-run-state.json
+cp .loop/receiver-state.json receiver-state.json
+cp .loop/sender-state.json sender-state.json
 ```
 
-Edit `loop-state.json` — set your `targets`, `deps`, and `max_attempts`.
+Edit `receiver-state.json` — set your `targets`, `deps`, and `max_attempts`.
 
-### 4. Create loop-context.md (optional)
-
-`loop-context.md` is auto-created at startup if it doesn't exist. You can also create it manually with richer content:
-
-```markdown
-# Deployment Loop — Shared Context
-
-## Current State
-- Status: idle
-
-## Target Queue
-| Target | Depends on | Description |
-|--------|-----------|-------------|
-| `build` | — | Build the project |
-| `test` | `build` | Run tests |
-| `deploy` | `test` | Deploy to production |
-
-## OpenCode Instructions
-Read this file before every fix. Do not repeat a fix already listed below.
-
-## Loop Parameters
-- Max attempts per target: 10
-- Context file size cap: 500 lines (overflow archived to docs/loop-context-archive.md)
-
-## Known Issues & Fixes Applied
-<!-- OpenCode appends entries here after every fix -->
-```
-
-### 5. Add to .gitattributes
+### 4. Add to .gitattributes
 
 ```
-loop-state.json     merge=ours
-loop-run-state.json merge=ours
+receiver-state.json merge=ours
+sender-state.json   merge=ours
 ```
 
-### 6. Add to .gitignore
+### 5. Add to .gitignore
 
 ```
 runs/
@@ -125,20 +108,18 @@ runs/
 
 ---
 
-## loop-state.json schema
+## receiver-state.json schema
 
 ```json
 {
   "fix_pushed": false,
-  "waiting_for_fix": false,
-  "opencode_last_fix": null,
+  "last_fix": null,
   "targets": ["build", "test", "deploy"],
   "deps": {
     "test": ["build"],
     "deploy": ["test"]
   },
   "max_attempts": 10,
-  "human_action": null,
   "blocker_patterns": [
     {
       "pattern": "No route to host.*192\\.168\\.1\\.1",
@@ -155,32 +136,56 @@ runs/
 | `targets` | You | Ordered list of make targets to run |
 | `deps` | You | Dependency graph — a target only runs when all its deps have completed |
 | `max_attempts` | You | Max retries per target before it is marked permanently failed |
-| `blocker_patterns` | You | Regex patterns to match against run logs. On match, loop pauses immediately and asks for human intervention instead of retrying. Add your own infrastructure-specific patterns here. |
-| `fix_pushed` | Mac (`opencode_loop.py`) | Set to true when OpenCode has pushed a fix and the runner should retry |
-| `waiting_for_fix` | Runner (`loop.py`) | Set to true when the runner is paused waiting for a fix |
-| `opencode_last_fix` | Mac (`opencode_loop.py`) | Free-text description of the last fix applied |
-| `human_action` | Either | Non-null message when human intervention is required |
+| `blocker_patterns` | You | Regex patterns matched against run logs. On match, loop escalates to `needs_human` instead of retrying. |
+| `fix_pushed` | Receiver | Set to true when OpenCode has pushed a fix and the sender should retry |
+| `last_fix` | Receiver | Free-text description of the last fix applied |
 | `stop` | `loop_stop.py` | Set to true by `make loop-stop` — both sides exit on next pull |
-| `pause` | `loop_pause.py` | Set to true by `make loop-pause` — runner finishes current target then waits |
+| `pause` | `loop_pause.py` | Set to true by `make loop-pause` — sender finishes current target then waits |
+
+## sender-state.json schema
+
+```json
+{
+  "status": "idle",
+  "targets": [],
+  "completed_targets": [],
+  "failed_targets": [],
+  "attempts": {},
+  "max_attempts": 10,
+  "last_result": null,
+  "last_run_log": null,
+  "human_action": null
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `running`, `needs_human`, `completed`, `completed_with_failures`, or `idle` |
+| `completed_targets` | Targets that succeeded |
+| `failed_targets` | Targets that hit max attempts and are permanently failed |
+| `attempts` | Per-target attempt counts |
+| `last_result` | `success` or `failed` |
+| `last_run_log` | Name of the target that last ran |
+| `human_action` | Non-null message when human intervention is required |
 
 ---
 
 ## Scripts
 
-All scripts live in `.loop/bin/` and are called via the Makefile. You do not need to call them directly.
+All scripts live in `.loop/bin/` and are called via the Makefile.
 
 | Script | Runs on | What it does |
 |---|---|---|
-| `bin/lib.py` | — | Shared library: state I/O, git ops, dependency resolution, blocker detection, result parsing. Imported by all other scripts. |
-| `bin/loop.py` | Runner | Core loop — reads targets from `loop-state.json`, runs `make <target>` in dependency order, retries on failure, signals OpenCode when stuck |
-| `bin/loop_resilient.py` | Runner | Wrapper around `loop.py` — restarts it if it crashes, pulls latest code before each restart. Auto-creates `loop-context.md` if missing. This is what `make loop-start-sender` runs. |
-| `bin/loop_stop.py` | Either | Kills local tmux session and sets `stop=true` in `loop-state.json`, then pushes — both sides exit on next pull. Called by `make loop-stop`. |
-| `bin/loop_pause.py` | Either | Kills local tmux session and sets `pause=true` in `loop-state.json`, then pushes — remote finishes current target then waits. Called by `make loop-pause`. |
-| `bin/loop_reset.py` | Mac | Resets both state files to blank, commits and pushes — all targets will re-run from scratch |
-| `bin/loop_status.py` | Either | Prints current status, completed/failed targets, attempt counts from `loop-run-state.json` |
-| `bin/loop_ack.py` | Mac | Acknowledges a `needs_human` pause or resumes after `make loop-pause` — sets `fix_pushed=true` and clears signals. |
-| `bin/opencode_loop.py` | Mac | Polls `loop-run-state.json` for failures, invokes OpenCode to diagnose and fix, pushes the fix, and sets `fix_pushed=true` so the runner retries. This is what `make loop-start-receiver` runs. |
-| `bin/trim_loop_context.py` | Mac | Caps `loop-context.md` at 500 lines — archives overflow to `docs/loop-context-archive.md`. Called automatically by `opencode_loop.py` after every fix. |
+| `bin/lib.py` | — | Shared library: state I/O, git ops, dependency resolution, blocker detection, result parsing |
+| `bin/loop.py` | Sender | Core loop — reads targets from `receiver-state.json`, runs `make <target>` in dependency order, writes results to `sender-state.json`, polls for fix from receiver |
+| `bin/loop_resilient.py` | Sender | Crash-resilient wrapper — restarts `loop.py` on crash, pulls latest code first, auto-creates `loop-context.md`. This is what `make loop-start-sender` runs. |
+| `bin/opencode_loop.py` | Receiver | Polls `sender-state.json` for failures, invokes OpenCode to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
+| `bin/loop_stop.py` | Either | Kills local tmux session, sets `stop=true` in `receiver-state.json`, pushes — both sides exit on next pull |
+| `bin/loop_pause.py` | Either | Kills local tmux session, sets `pause=true` in `receiver-state.json`, pushes — sender finishes current target then waits |
+| `bin/loop_reset.py` | Either | Resets both state files, commits and pushes — all targets re-run from scratch |
+| `bin/loop_status.py` | Either | Prints current status from `sender-state.json` |
+| `bin/loop_ack.py` | Either | Sets `fix_pushed=true` in `receiver-state.json`, clears `human_action` in `sender-state.json` — resumes the sender |
+| `bin/trim_loop_context.py` | Receiver | Caps `loop-context.md` at 500 lines, archives overflow. Called automatically by `opencode_loop.py` after every fix. |
 
 ---
 
@@ -188,9 +193,9 @@ All scripts live in `.loop/bin/` and are called via the Makefile. You do not nee
 
 - `python3` (3.9+)
 - `git`
-- `make` (targets invoked via `make <target>`)
-- `tmux` — required on both machines. The sender and receiver each run in a detached tmux session. Install with `brew install tmux` (macOS) or `apt install tmux` (Linux).
-- `opencode` CLI — only needed on the receiver (Mac) side, for `loop-start-receiver`
+- `make`
+- `tmux` — required on both machines. Install with `brew install tmux` (macOS) or `apt install tmux` (Linux).
+- `opencode` CLI — only needed on the receiver side for `loop-start-receiver`
 
 ---
 
