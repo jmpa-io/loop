@@ -13,9 +13,9 @@ LOOP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 loop-start-sender: ## Loop: start the sender (runner/executor) in a detached tmux session.
 loop-start-sender:
 	@SESSION="homelab-loop"; \
-	SCRIPT="$(LOOP_DIR)bin/loop_resilient.py"; \
-	if pgrep -f "loop_resilient.py" > /dev/null 2>&1; then \
-		echo "Sender loop is already running (PID: $$(pgrep -f loop_resilient.py | tr '\n' ' '))"; \
+	SCRIPT="$(LOOP_DIR)bin/sender_resilient.py"; \
+	if pgrep -f "sender_resilient.py" > /dev/null 2>&1; then \
+		echo "Sender loop is already running (PID: $$(pgrep -f sender_resilient.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
 	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \
@@ -31,9 +31,9 @@ loop-start-sender:
 loop-start-receiver: ## Loop: start the receiver (OpenCode fixer) in a detached tmux session.
 loop-start-receiver:
 	@SESSION="homelab-loop-receiver"; \
-	SCRIPT="$(LOOP_DIR)bin/opencode_loop.py"; \
-	if pgrep -f "opencode_loop.py" > /dev/null 2>&1; then \
-		echo "Receiver loop is already running (PID: $$(pgrep -f opencode_loop.py | tr '\n' ' '))"; \
+	SCRIPT="$(LOOP_DIR)bin/receiver.py"; \
+	if pgrep -f "receiver.py" > /dev/null 2>&1; then \
+		echo "Receiver loop is already running (PID: $$(pgrep -f receiver.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
 	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \

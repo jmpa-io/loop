@@ -595,13 +595,13 @@ class TestStateIO(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: opencode_loop -- should_invoke_opencode (pure function)
+# Unit: receiver -- should_invoke_opencode (pure function)
 # ===========================================================================
 
 
 class TestShouldInvokeOpencode(unittest.TestCase):
     def setUp(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         self.fn = opencode_loop.should_invoke_opencode
 
@@ -676,13 +676,13 @@ class TestShouldInvokeOpencode(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: opencode_loop -- build_opencode_prompt (pure function)
+# Unit: receiver -- build_opencode_prompt (pure function)
 # ===========================================================================
 
 
 class TestBuildOpencodePrompt(unittest.TestCase):
     def setUp(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         self.fn = opencode_loop.build_opencode_prompt
 
@@ -718,7 +718,7 @@ class TestBuildOpencodePrompt(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: loop.py -- run_target (via mocked subprocess + state)
+# Unit: sender.py -- run_target (via mocked subprocess + state)
 # ===========================================================================
 
 
@@ -736,7 +736,7 @@ class TestRunTarget(unittest.TestCase):
         )
 
     def _run_target(self, target, branch, make_returncode=0):
-        import loop
+        import sender as loop
 
         with patch.object(loop, "REPO", self.repo):
             with patch("subprocess.run") as mock_run:
@@ -772,7 +772,7 @@ class TestRunTarget(unittest.TestCase):
         sender = lib.load_sender_state(self.repo)
         sender["completed_targets"] = ["a"]
         lib.save_sender_state(self.repo, sender)
-        import loop
+        import sender as loop
 
         with patch.object(loop, "REPO", self.repo):
             with patch("subprocess.run") as mock_run:
@@ -807,7 +807,7 @@ class TestRunTarget(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: loop.py -- initialise
+# Unit: sender.py -- initialise
 # ===========================================================================
 
 
@@ -817,7 +817,7 @@ class TestInitialise(unittest.TestCase):
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
 
     def test_initialise_creates_running_sender_state(self):
-        import loop
+        import sender as loop
 
         with patch.object(loop, "REPO", self.repo):
             with patch("lib.push_sender_state"):
@@ -830,7 +830,7 @@ class TestInitialise(unittest.TestCase):
         sender["completed_targets"] = ["a"]
         lib.save_sender_state(self.repo, sender)
 
-        import loop
+        import sender as loop
 
         with patch.object(loop, "REPO", self.repo):
             with patch.object(
@@ -1286,7 +1286,7 @@ class TestStateSchema(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: opencode_loop -- set_fix_pushed (with mocked git)
+# Unit: receiver -- set_fix_pushed (with mocked git)
 # ===========================================================================
 
 
@@ -1296,7 +1296,7 @@ class TestSetFixPushed(unittest.TestCase):
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
 
     def _run(self, message="test fix"):
-        import opencode_loop
+        import receiver as opencode_loop
 
         with patch.object(opencode_loop, "REPO", self.repo):
             with patch("lib.git") as mock_git:
@@ -1321,7 +1321,7 @@ class TestSetFixPushed(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: opencode_loop -- gather_previous_logs (pure function)
+# Unit: receiver -- gather_previous_logs (pure function)
 # ===========================================================================
 
 
@@ -1337,13 +1337,13 @@ class TestGatherPreviousLogs(unittest.TestCase):
         return p
 
     def test_no_prev_logs_returns_empty(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         result = opencode_loop.gather_previous_logs(self.runs_dir, "build", [])
         self.assertEqual("", result)
 
     def test_includes_previous_log_content(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         logs = [
             self._make_log("build-001.log", "first run"),
@@ -1353,7 +1353,7 @@ class TestGatherPreviousLogs(unittest.TestCase):
         self.assertIn("second run", result)
 
     def test_includes_opencode_log_if_present(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         self._make_log("opencode-loop-20240101.log", "opencode output here")
         logs = [self._make_log("build-001.log", "main log")]
@@ -1361,7 +1361,7 @@ class TestGatherPreviousLogs(unittest.TestCase):
         self.assertIn("opencode output here", result)
 
     def test_max_3_prev_logs(self):
-        import opencode_loop
+        import receiver as opencode_loop
 
         logs = [self._make_log(f"build-00{i}.log", f"run {i}") for i in range(6)]
         result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
@@ -1372,7 +1372,7 @@ class TestGatherPreviousLogs(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: loop.py -- main() loop signal handling
+# Unit: sender.py -- main() loop signal handling
 # ===========================================================================
 
 
@@ -1383,7 +1383,7 @@ class TestLoopMainSignals(unittest.TestCase):
 
     def _run_main_one_tick(self, receiver_override=None, sender_override=None):
         """Run loop.main() with stop signal set so it exits after one iteration."""
-        import loop
+        import sender as loop
 
         if receiver_override:
             rc = lib.load_receiver_state(self.repo)
@@ -1439,7 +1439,7 @@ class TestLoopMainSignals(unittest.TestCase):
         rc["targets"] = ["a"]
         lib.save_receiver_state(self.repo, rc)
 
-        import loop
+        import sender as loop
 
         call_count = 0
 
@@ -1473,7 +1473,7 @@ class TestLoopMainSignals(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: opencode_loop -- main() key paths
+# Unit: receiver -- main() key paths
 # ===========================================================================
 
 
@@ -1486,7 +1486,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
     def _run_receiver_one_tick(
         self, sender_override=None, receiver_override=None, opencode_output="RETRY"
     ):
-        import opencode_loop
+        import receiver as opencode_loop
 
         if sender_override:
             s = lib.load_sender_state(self.repo)
@@ -1535,7 +1535,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
 
     def test_receiver_stands_by_when_no_failure(self):
         # Verify via pure function — last_result=success means nothing to fix
-        import opencode_loop
+        import receiver as opencode_loop
 
         sender = {
             "last_result": "success",
@@ -1552,7 +1552,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
 
     def test_receiver_waits_when_no_sender_state(self):
         # Verify via pure function — empty sender state means nothing to fix
-        import opencode_loop
+        import receiver as opencode_loop
 
         ok, reason = opencode_loop.should_invoke_opencode(
             {}, {"fix_pushed": False}, "", ""
@@ -1561,7 +1561,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
 
     def test_should_invoke_opencode_true_for_failed_target_with_log(self):
         # Verify the decision function returns True for a real failure with a log
-        import opencode_loop
+        import receiver as opencode_loop
 
         log = self.repo / "runs" / "a-20240101-120000.log"
         log.write_text("Error: something failed")
@@ -1581,7 +1581,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: loop_resilient -- loop-context.md auto-creation
+# Unit: sender_resilient -- loop-context.md auto-creation
 # ===========================================================================
 
 
@@ -1591,7 +1591,7 @@ class TestLoopResilientContextCreation(unittest.TestCase):
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
 
     def test_creates_loop_context_if_missing(self):
-        import loop_resilient
+        import sender_resilient as loop_resilient
 
         context_file = self.repo / "loop-context.md"
         self.assertFalse(context_file.exists())
@@ -1618,7 +1618,7 @@ class TestLoopResilientContextCreation(unittest.TestCase):
         self.assertIn("Loop Context", content)
 
     def test_does_not_overwrite_existing_context(self):
-        import loop_resilient
+        import sender_resilient as loop_resilient
 
         context_file = self.repo / "loop-context.md"
         context_file.write_text("# My existing context\n\nDo not overwrite me.")

@@ -12,7 +12,7 @@ sockets, no HTTP.
 
 ```
 [Sender — runner machine]               [Receiver — Mac]
-loop.py  ────── git push ──────────►  opencode_loop.py
+sender.py  ──── git push ──────────►  receiver.py
   runs make targets in dep order          watches sender-state.json for failures
   writes sender-state.json                invokes OpenCode to diagnose + fix
   reads receiver-state.json               pushes fix, sets fix_pushed=true
@@ -25,8 +25,8 @@ File ownership is strict:
 
 This eliminates merge conflicts entirely.
 
-`loop_resilient.py` wraps `loop.py` — auto-restarts on crash, pulls latest
-code before each restart. `make loop-start-sender` always runs `loop_resilient.py`.
+`sender_resilient.py wraps sender.py` — auto-restarts on crash, pulls latest
+code before each restart. `make loop-start-sender` always runs `sender_resilient.py`.
 
 Single machine: run `make loop-start-sender` and `make loop-start-receiver` in
 separate terminals on the same machine.
@@ -41,10 +41,10 @@ separate terminals on the same machine.
 - **Strict file ownership** — sender writes sender-state.json only, receiver writes receiver-state.json only
 - **No waiting_for_fix flag** — receiver infers sender needs fix from sender-state.json directly via `lib.sender_needs_fix()`
 - **Renamed state files** — `loop-state.json` → `receiver-state.json`, `loop-run-state.json` → `sender-state.json`
-- **Extracted pure functions in opencode_loop.py** — `should_invoke_opencode()`, `build_opencode_prompt()`, `gather_previous_logs()`, `set_fix_pushed()`, `notify_human()` — all testable without subprocess
+- **Extracted pure functions in receiver.py** — `should_invoke_opencode()`, `build_opencode_prompt()`, `gather_previous_logs()`, `set_fix_pushed()`, `notify_human()` — all testable without subprocess
 - **stop/pause signals** — `make loop-stop` and `make loop-pause` kill local tmux and push signal via git
 - **loop-start-sender / loop-start-receiver split** — separate make targets for each side
-- **Auto-create loop-context.md** — created at startup by `loop_resilient.py` if missing
+- **Auto-create loop-context.md** — created at startup by `sender_resilient.py` if missing
 - **148 passing tests, 76% coverage** — up from 42% at previous session
 
 ### Coverage breakdown
@@ -52,11 +52,11 @@ separate terminals on the same machine.
 | File | Coverage |
 |---|---|
 | `lib.py` | 86% |
-| `loop.py` | 76% |
-| `loop_resilient.py` | 93% |
+| `sender.py` | 76% |
+| `sender_resilient.py` | 93% |
 | `loop_status.py` | 95% |
 | `trim_loop_context.py` | 97% |
-| `opencode_loop.py` | 51% |
+| `receiver.py` | 51% |
 | `loop_ack.py` | 71% |
 | `loop_stop.py` | 70% |
 | `loop_pause.py` | 70% |
@@ -66,7 +66,7 @@ separate terminals on the same machine.
 
 The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop_reset.py` are all the push/retry-on-conflict paths (lines after the first successful git push). These require a live git remote to test properly.
 
-`opencode_loop.py` main() loop body (lines 210-373) — the full end-to-end invocation path including subprocess OpenCode call, git commit, and push. Covered via pure function tests instead.
+`receiver.py` main() loop body (lines 210-373) — the full end-to-end invocation path including subprocess OpenCode call, git commit, and push. Covered via pure function tests instead.
 
 ---
 
@@ -77,9 +77,9 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 | File | Purpose |
 |---|---|
 | `bin/lib.py` | Shared library — all pure logic: state I/O, git ops, dep resolution, blocker detection, signal helpers, state transitions |
-| `bin/loop.py` | Core sender loop — runs `make <target>` in dep order, retries, polls receiver for fix signal |
-| `bin/loop_resilient.py` | Crash-resilient wrapper — restarts `loop.py` on crash, pulls latest code first, auto-creates `loop-context.md` |
-| `bin/opencode_loop.py` | Receiver — polls sender-state.json for failures, invokes OpenCode to fix, sets fix_pushed in receiver-state.json |
+| `bin/sender.py` | Core sender loop — runs `make <target>` in dep order, retries, polls receiver for fix signal |
+| `bin/sender_resilient.py` | Crash-resilient wrapper — restarts `sender.py` on crash, pulls latest code first, auto-creates `loop-context.md` |
+| `bin/receiver.py` | Receiver — polls sender-state.json for failures, invokes OpenCode to fix, sets fix_pushed in receiver-state.json |
 | `bin/loop_ack.py` | Acknowledges human action / resumes after pause |
 | `bin/loop_pause.py` | Sets pause signal in receiver-state.json, kills local tmux |
 | `bin/loop_stop.py` | Sets stop signal in receiver-state.json, kills local tmux |
@@ -106,5 +106,5 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 ## Next steps (in order)
 
 1. Update the homelab repo to use new file names (receiver-state.json, sender-state.json)
-2. Push coverage higher on opencode_loop.py main() — consider integration test with mocked opencode binary
+2. Push coverage higher on receiver.py main() — consider integration test with mocked opencode binary
 3. Push coverage on ack/stop/pause/reset retry paths — requires live git remote or test git server

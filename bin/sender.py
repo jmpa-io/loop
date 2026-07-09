@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bin/loop.py — dependency-aware deployment loop (sender side).
+bin/sender.py — dependency-aware deployment loop (sender side).
 
 Reads targets and their dependency graph from receiver-state.json.
 A target runs only when ALL its dependencies have succeeded.

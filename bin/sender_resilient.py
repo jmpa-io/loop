@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-bin/loop_resilient.py — crash-resilient wrapper around loop.py.
+bin/sender_resilient.py — crash-resilient wrapper around loop.py.
 
-Keeps loop.py running even if it crashes. Pulls latest code before each
+Keeps sender.py running even if it crashes. Pulls latest code before each
 restart. All output is tee'd to runs/resilient.log so the Mac can read it
 via git without needing terminal access.
 
@@ -21,7 +21,7 @@ import lib
 REPO = lib.repo_root()
 RESTART_DELAY = 10  # seconds between restarts
 LOG_FILE = REPO / "runs" / "resilient.log"
-LOOP_SCRIPT = Path(__file__).resolve().parent / "loop.py"
+LOOP_SCRIPT = Path(__file__).resolve().parent / "sender.py"
 
 
 def push_log(branch: str, message: str) -> None:

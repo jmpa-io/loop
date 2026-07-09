@@ -8,7 +8,7 @@ Two processes run on two machines and communicate entirely through git commits �
 
 ```
 [Sender — runner machine]               [Receiver — Mac]
-loop.py  ────── git push ──────────►  opencode_loop.py
+sender.py  ──── git push ──────────►  receiver.py
   runs make targets in dep order          watches sender-state.json for failures
   writes sender-state.json                invokes OpenCode to diagnose + fix
   reads receiver-state.json               pushes fix, sets fix_pushed=true
@@ -24,7 +24,7 @@ loop.py  ────── git push ──────────►  opencode
 
 This eliminates merge conflicts. Each machine only writes its own file.
 
-`loop_resilient.py` wraps `loop.py` — if it crashes or exits non-zero, it pulls latest code and restarts automatically. `make loop-start-sender` always runs `loop_resilient.py`.
+`sender_resilient.py wraps sender.py` — if it crashes or exits non-zero, it pulls latest code and restarts automatically. `make loop-start-sender` always runs `sender_resilient.py`.
 
 **Single machine:** Run both `make loop-start-sender` and `make loop-start-receiver` in separate terminals on the same machine — they communicate through the same git repo on disk.
 
@@ -177,15 +177,15 @@ All scripts live in `.loop/bin/` and are called via the Makefile.
 | Script | Runs on | What it does |
 |---|---|---|
 | `bin/lib.py` | — | Shared library: state I/O, git ops, dependency resolution, blocker detection, result parsing |
-| `bin/loop.py` | Sender | Core loop — reads targets from `receiver-state.json`, runs `make <target>` in dependency order, writes results to `sender-state.json`, polls for fix from receiver |
-| `bin/loop_resilient.py` | Sender | Crash-resilient wrapper — restarts `loop.py` on crash, pulls latest code first, auto-creates `loop-context.md`. This is what `make loop-start-sender` runs. |
-| `bin/opencode_loop.py` | Receiver | Polls `sender-state.json` for failures, invokes OpenCode to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
+| `bin/sender.py` | Sender | Core loop — reads targets from `receiver-state.json`, runs `make <target>` in dependency order, writes results to `sender-state.json`, polls for fix from receiver |
+| `bin/sender_resilient.py` | Sender | Crash-resilient wrapper — restarts `sender.py` on crash, pulls latest code first, auto-creates `loop-context.md`. This is what `make loop-start-sender` runs. |
+| `bin/receiver.py` | Receiver | Polls `sender-state.json` for failures, invokes OpenCode to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
 | `bin/loop_stop.py` | Either | Kills local tmux session, sets `stop=true` in `receiver-state.json`, pushes — both sides exit on next pull |
 | `bin/loop_pause.py` | Either | Kills local tmux session, sets `pause=true` in `receiver-state.json`, pushes — sender finishes current target then waits |
 | `bin/loop_reset.py` | Either | Resets both state files, commits and pushes — all targets re-run from scratch |
 | `bin/loop_status.py` | Either | Prints current status from `sender-state.json` |
 | `bin/loop_ack.py` | Either | Sets `fix_pushed=true` in `receiver-state.json`, clears `human_action` in `sender-state.json` — resumes the sender |
-| `bin/trim_loop_context.py` | Receiver | Caps `loop-context.md` at 500 lines, archives overflow. Called automatically by `opencode_loop.py` after every fix. |
+| `bin/trim_loop_context.py` | Receiver | Caps `loop-context.md` at 500 lines, archives overflow. Called automatically by `receiver.py` after every fix. |
 
 ---
 

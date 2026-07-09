@@ -6,8 +6,8 @@ detection live here so every other script imports rather than duplicates them,
 and tests can exercise the logic without subprocesses.
 
 File ownership:
-    sender-state.json   — written ONLY by the sender (loop.py / loop_resilient.py)
-    receiver-state.json — written ONLY by the receiver (opencode_loop.py) and
+    sender-state.json   — written ONLY by the sender (sender.py / sender_resilient.py)
+    receiver-state.json — written ONLY by the receiver (receiver.py) and
                           human-facing scripts (loop_reset, loop_stop, loop_pause,
                           loop_ack) which act on behalf of the receiver/operator.
 """

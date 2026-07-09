@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bin/opencode_loop.py — receiver side AI self-healing loop.
+bin/receiver.py — receiver side AI self-healing loop.
 
 Polls sender-state.json (written by the sender) for failures.
 When a target fails, invokes OpenCode to diagnose and fix the code,
@@ -86,8 +86,8 @@ def build_opencode_prompt(
     return f"""You are the deployment agent. A make target has failed and you must diagnose and fix the code.
 
 ## Repo structure (understand this before touching anything)
-- .loop/bin/loop.py             — sender loop (do NOT modify while loop is running)
-- .loop/bin/opencode_loop.py    — receiver loop (this script — do NOT self-modify)
+- .loop/bin/sender.py             — sender loop (do NOT modify while loop is running)
+- .loop/bin/receiver.py    — receiver loop (this script — do NOT self-modify)
 - receiver-state.json           — YOUR file: targets, deps, fix signals (you may update fix_pushed)
 - sender-state.json             — SENDER'S file: runtime state — DO NOT COMMIT THIS FILE
 - loop-context.md               — Shared brain: full history of every failure and fix applied
