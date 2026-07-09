@@ -79,31 +79,37 @@ def build_opencode_prompt(
     latest_log: str,
     log_content: str,
     prev_logs_content: str,
+    repo: "Path" = None,
 ) -> str:
     """
     Build the OpenCode prompt for a failed target.
-    Pure function — no I/O, fully testable.
+    Uses absolute paths so OpenCode reads the correct files regardless of
+    its own session working directory.
+    repo is optional for backwards compatibility with existing tests.
     """
+    repo_str = str(repo) if repo else "."
     return f"""You are the deployment agent. A make target has failed and you must diagnose and fix the code.
 
-## Repo structure (understand this before touching anything)
-- .loop/bin/sender.py             — sender loop (do NOT modify while loop is running)
-- .loop/bin/receiver.py    — receiver loop (this script — do NOT self-modify)
-- receiver-state.json           — YOUR file: targets, deps, fix signals (you may update fix_pushed)
-- sender-state.json             — SENDER'S file: runtime state — DO NOT COMMIT THIS FILE
-- loop-context.md               — Shared brain: full history of every failure and fix applied
-- runs/                         — Run logs committed by the sender — read to diagnose failures
+## Repo root (ALL file paths below are absolute — use them exactly as shown)
+{repo_str}
+
+## Files to read FIRST (in this order, using the absolute paths above)
+1. {repo_str}/loop-context.md — FULL FILE. Read BEFORE writing any fix.
+2. {repo_str}/runs/logs/{latest_log} — FULL FILE. Look for the FIRST error line.
+3. {repo_str}/sender-state.json — note attempt count and completed/failed targets.
+
+## Repo structure
+- {repo_str}/receiver-state.json   — YOUR file: targets, deps, fix signals
+- {repo_str}/sender-state.json     — SENDER file — DO NOT COMMIT THIS FILE
+- {repo_str}/loop-context.md       — Shared brain: failure history
+- {repo_str}/runs/logs/            — Run logs from the sender
 
 ## Critical rules
 - NEVER commit sender-state.json
 - NEVER commit files in runs/ or dist/
 - NEVER run live infrastructure commands (make <deploy target>, kubectl, ansible-playbook, etc.)
 - NEVER hardcode credentials
-
-## Files to read first (in this order)
-1. loop-context.md — FULL FILE. Read BEFORE writing any fix. Same fix twice = wrong approach.
-2. runs/logs/{latest_log} — FULL FILE. Look for the FIRST error line, not the last symptom.
-3. sender-state.json — note attempt count and completed/failed targets for context.
+- Only fix files inside {repo_str}/ — do not touch files outside this directory
 
 ## Previous attempts on this target
 {prev_logs_content}
@@ -118,7 +124,7 @@ For real failures:
 4. Fix minimum necessary files. Prefer editing existing files over creating new ones.
 5. Validate your changes before committing.
 6. Update loop-context.md: add a bullet under ### {target} with today's date, error seen, and fix applied.
-7. Commit and push your changes (NOT sender-state.json, NOT runs/).
+7. Commit and push your changes using git -C {repo_str} (NOT sender-state.json, NOT runs/).
 
 Output exactly one of these as the LAST LINE: RETRY, SUCCESS, or NEEDS_HUMAN
 - RETRY: fix pushed, sender should retry
@@ -292,7 +298,7 @@ def main() -> None:
         prev_logs_content = gather_previous_logs(runs_dir, target, logs)
         log_content = logs[0].read_text(errors="replace") if logs else ""
         prompt = build_opencode_prompt(
-            target, latest_log, log_content, prev_logs_content
+            target, latest_log, log_content, prev_logs_content, repo=REPO
         )
 
         result = subprocess.run(
