@@ -10,42 +10,74 @@
 # Path to this Makefile's directory — works whether included or run directly.
 LOOP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-loop-start: ## Loop: start the resilient loop in a detached tmux session.
-loop-start:
+loop-start-sender: ## Loop: start the sender (runner/executor) in a detached tmux session.
+loop-start-sender:
 	@SESSION="homelab-loop"; \
 	SCRIPT="$(LOOP_DIR)bin/loop_resilient.py"; \
 	if pgrep -f "loop_resilient.py" > /dev/null 2>&1; then \
-		echo "Loop is already running (PID: $$(pgrep -f loop_resilient.py | tr '\n' ' '))"; \
+		echo "Sender loop is already running (PID: $$(pgrep -f loop_resilient.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
 	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \
 		tmux kill-session -t "$$SESSION" 2>/dev/null || true; \
 		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
-		echo "Loop started. Run 'make loop-attach' to watch it."; \
+		echo "Sender started. Run 'make loop-attach' to watch it."; \
 	else \
-		echo "Starting loop..."; \
+		echo "Starting sender loop..."; \
 		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
-		echo "Loop started. Run 'make loop-attach' to watch it."; \
+		echo "Sender started. Run 'make loop-attach' to watch it."; \
 	fi
 
-loop-stop: ## Loop: stop the running loop tmux session.
-loop-stop:
-	@tmux kill-session -t homelab-loop 2>/dev/null && echo "Loop stopped." || echo "No loop session running."
+loop-start-receiver: ## Loop: start the receiver (OpenCode fixer) in a detached tmux session.
+loop-start-receiver:
+	@SESSION="homelab-loop-receiver"; \
+	SCRIPT="$(LOOP_DIR)bin/opencode_loop.py"; \
+	if pgrep -f "opencode_loop.py" > /dev/null 2>&1; then \
+		echo "Receiver loop is already running (PID: $$(pgrep -f opencode_loop.py | tr '\n' ' '))"; \
+		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
+	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
+		echo "Stale tmux session found — killing and restarting..."; \
+		tmux kill-session -t "$$SESSION" 2>/dev/null || true; \
+		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		echo "Receiver started. Run 'make loop-attach' to watch it."; \
+	else \
+		echo "Starting receiver loop..."; \
+		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		echo "Receiver started. Run 'make loop-attach' to watch it."; \
+	fi
 
 loop-attach: ## Loop: attach to the running tmux session to watch output.
 loop-attach:
-	@tmux attach -t homelab-loop 2>/dev/null || echo "No loop session running. Run 'make loop-start' first."
+	@if tmux has-session -t homelab-loop 2>/dev/null; then \
+		tmux attach -t homelab-loop; \
+	elif tmux has-session -t homelab-loop-receiver 2>/dev/null; then \
+		tmux attach -t homelab-loop-receiver; \
+	else \
+		echo "No loop session running. Run 'make loop-start-sender' or 'make loop-start-receiver' first."; \
+	fi
+
+loop-stop: ## Loop: stop both sides immediately and signal the remote machine to stop.
+loop-stop:
+	@python3 $(LOOP_DIR)bin/loop_stop.py
+
+loop-pause: ## Loop: pause after the current target completes. Run 'make loop-ack' to resume.
+loop-pause:
+	@python3 $(LOOP_DIR)bin/loop_pause.py
 
 loop-status: ## Loop: show current status, completed/failed targets, and attempt counts.
 loop-status:
 	@python3 $(LOOP_DIR)bin/loop_status.py
 
-loop-reset: ## Loop: reset all state — all targets re-run from scratch on next loop-start.
+loop-reset: ## Loop: reset all state — all targets re-run from scratch on next loop-start-sender.
 loop-reset:
 	@python3 $(LOOP_DIR)bin/loop_reset.py
+
+loop-ack: ## Loop: acknowledge a human action / resume after pause.
+loop-ack:
+	@python3 $(LOOP_DIR)bin/loop_ack.py
 
 loop-test: ## Loop: run unit tests.
 loop-test:
 	@python3 $(LOOP_DIR)tests/test_loop.py
 
-.PHONY += loop-start loop-stop loop-attach loop-status loop-reset loop-test
+.PHONY += loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-status loop-reset loop-ack loop-test

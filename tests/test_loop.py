@@ -878,6 +878,92 @@ class TestTrimLoopContextIntegration(unittest.TestCase):
 
 
 # ===========================================================================
+# Integration: loop_stop.py
+# ===========================================================================
+
+
+class TestLoopStop(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_stop(self):
+        import loop_stop
+
+        with patch.object(loop_stop, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git") as mock_git:
+                    mock_git.return_value = MagicMock(returncode=0)
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        try:
+                            loop_stop.main()
+                        except SystemExit:
+                            pass
+
+    def test_stop_sets_stop_true_in_oc_state(self):
+        self._run_stop()
+        oc = lib.load_oc_state(self.repo)
+        self.assertTrue(oc.get("stop"))
+
+    def test_stop_clears_pause_field(self):
+        oc = lib.load_oc_state(self.repo)
+        oc["pause"] = True
+        lib.save_oc_state(self.repo, oc)
+        self._run_stop()
+        oc = lib.load_oc_state(self.repo)
+        self.assertTrue(oc.get("stop"))
+        self.assertFalse(oc.get("pause", False))
+
+    def test_stop_does_not_set_pause(self):
+        self._run_stop()
+        oc = lib.load_oc_state(self.repo)
+        self.assertFalse(oc.get("pause", False))
+
+
+# ===========================================================================
+# Integration: loop_pause.py
+# ===========================================================================
+
+
+class TestLoopPause(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_pause(self):
+        import loop_pause
+
+        with patch.object(loop_pause, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git") as mock_git:
+                    mock_git.return_value = MagicMock(returncode=0)
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        try:
+                            loop_pause.main()
+                        except SystemExit:
+                            pass
+
+    def test_pause_sets_pause_true_in_oc_state(self):
+        self._run_pause()
+        oc = lib.load_oc_state(self.repo)
+        self.assertTrue(oc.get("pause"))
+
+    def test_pause_clears_stop_field(self):
+        oc = lib.load_oc_state(self.repo)
+        oc["stop"] = True
+        lib.save_oc_state(self.repo, oc)
+        self._run_pause()
+        oc = lib.load_oc_state(self.repo)
+        self.assertTrue(oc.get("pause"))
+        self.assertFalse(oc.get("stop", False))
+
+    def test_pause_does_not_set_stop(self):
+        self._run_pause()
+        oc = lib.load_oc_state(self.repo)
+        self.assertFalse(oc.get("stop", False))
+
+
+# ===========================================================================
 # Schema validation
 # ===========================================================================
 
@@ -887,13 +973,22 @@ class TestLoopStateSchema(unittest.TestCase):
 
     def test_loop_state_has_required_fields(self):
         data = json.loads((self.LOOP_REPO / "loop-state.json").read_text())
-        for field in ("targets", "deps", "max_attempts", "blocker_patterns"):
+        for field in (
+            "targets",
+            "deps",
+            "max_attempts",
+            "blocker_patterns",
+            "stop",
+            "pause",
+        ):
             self.assertIn(field, data)
         self.assertIsInstance(data["targets"], list)
         self.assertIsInstance(data["deps"], dict)
         self.assertIsInstance(data["max_attempts"], int)
         self.assertGreater(data["max_attempts"], 0)
         self.assertIsInstance(data["blocker_patterns"], list)
+        self.assertIsInstance(data["stop"], bool)
+        self.assertIsInstance(data["pause"], bool)
 
     def test_loop_run_state_has_required_fields(self):
         data = json.loads((self.LOOP_REPO / "loop-run-state.json").read_text())

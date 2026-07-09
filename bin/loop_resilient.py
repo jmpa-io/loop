@@ -42,6 +42,27 @@ def main() -> None:
 
     (REPO / "runs").mkdir(exist_ok=True)
 
+    # Auto-create loop-context.md if it doesn't exist so OpenCode has a file to read/append.
+    context_file = REPO / "loop-context.md"
+    if not context_file.exists():
+        oc_state = lib.load_oc_state(REPO)
+        targets = oc_state.get("targets", [])
+        max_attempts = oc_state.get("max_attempts", 10)
+        targets_table = "\n".join(
+            f"| {t} | pending | 0/{max_attempts} |" for t in targets
+        )
+        context_file.write_text(
+            f"# Loop Context\n\n"
+            f"Auto-created at startup. OpenCode appends failure/fix history here.\n\n"
+            f"## Targets\n\n"
+            f"| Target | Status | Attempts |\n"
+            f"|--------|--------|----------|\n"
+            f"{targets_table}\n\n"
+            f"## History\n\n"
+            f"_No failures yet._\n"
+        )
+        lib.log("Created loop-context.md (did not exist)")
+
     lib.log("Starting resilient loop")
     lib.log("Auto-restarts on crash. Ctrl+C to stop.")
     lib.log(f"Log file: {LOG_FILE}")

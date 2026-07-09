@@ -15,7 +15,7 @@ loop.py  ──────── git push ──────────►  op
   retries on fix  ◄──── git pull ───────
 ```
 
-`loop_resilient.py` wraps `loop.py` — if it crashes or exits non-zero, it pulls latest code and restarts it automatically. `make loop-start` always runs `loop_resilient.py`.
+`loop_resilient.py` wraps `loop.py` — if it crashes or exits non-zero, it pulls latest code and restarts it automatically. `make loop-start-sender` always runs `loop_resilient.py`.
 
 ---
 
@@ -66,9 +66,9 @@ cp .loop/loop-run-state.json loop-run-state.json
 
 Edit `loop-state.json` — set your `targets`, `deps`, and `max_attempts`.
 
-### 4. Create loop-context.md
+### 4. Create loop-context.md (optional)
 
-Create a `loop-context.md` in your repo root. Minimum content:
+`loop-context.md` is auto-created at startup if it doesn't exist. You can also create it manually with richer content:
 
 ```markdown
 # Deployment Loop — Shared Context
@@ -113,11 +113,14 @@ runs/
 
 | Target | What it does |
 |---|---|
-| `make loop-start` | Start the resilient loop in a detached tmux session |
-| `make loop-stop` | Kill the tmux session |
-| `make loop-attach` | Attach to the running tmux session to watch output |
+| `make loop-start-sender` | Start the sender (runner/executor) in a detached tmux session |
+| `make loop-start-receiver` | Start the receiver (OpenCode fixer) in a detached tmux session |
+| `make loop-attach` | Attach to the running sender or receiver tmux session |
+| `make loop-stop` | Kill local tmux session and signal the remote machine to stop immediately |
+| `make loop-pause` | Kill local tmux session and signal the remote machine to pause after current target |
 | `make loop-status` | Print current status, completed/failed targets, attempt counts |
-| `make loop-reset` | Clear all state — all targets re-run from scratch on next `loop-start` |
+| `make loop-reset` | Clear all state — all targets re-run from scratch on next `loop-start-sender` |
+| `make loop-ack` | Acknowledge a human action or resume after a pause |
 | `make loop-test` | Run the unit test suite |
 
 ---
@@ -141,7 +144,9 @@ runs/
       "pattern": "No route to host.*192\\.168\\.1\\.1",
       "message": "NAS is unreachable — check power and network"
     }
-  ]
+  ],
+  "stop": false,
+  "pause": false
 }
 ```
 
@@ -155,6 +160,8 @@ runs/
 | `waiting_for_fix` | Runner (`loop.py`) | Set to true when the runner is paused waiting for a fix |
 | `opencode_last_fix` | Mac (`opencode_loop.py`) | Free-text description of the last fix applied |
 | `human_action` | Either | Non-null message when human intervention is required |
+| `stop` | `loop_stop.py` | Set to true by `make loop-stop` — both sides exit on next pull |
+| `pause` | `loop_pause.py` | Set to true by `make loop-pause` — runner finishes current target then waits |
 
 ---
 
@@ -166,11 +173,13 @@ All scripts live in `.loop/bin/` and are called via the Makefile. You do not nee
 |---|---|---|
 | `bin/lib.py` | — | Shared library: state I/O, git ops, dependency resolution, blocker detection, result parsing. Imported by all other scripts. |
 | `bin/loop.py` | Runner | Core loop — reads targets from `loop-state.json`, runs `make <target>` in dependency order, retries on failure, signals OpenCode when stuck |
-| `bin/loop_resilient.py` | Runner | Wrapper around `loop.py` — restarts it if it crashes, pulls latest code before each restart. This is what `make loop-start` runs. |
+| `bin/loop_resilient.py` | Runner | Wrapper around `loop.py` — restarts it if it crashes, pulls latest code before each restart. Auto-creates `loop-context.md` if missing. This is what `make loop-start-sender` runs. |
+| `bin/loop_stop.py` | Either | Kills local tmux session and sets `stop=true` in `loop-state.json`, then pushes — both sides exit on next pull. Called by `make loop-stop`. |
+| `bin/loop_pause.py` | Either | Kills local tmux session and sets `pause=true` in `loop-state.json`, then pushes — remote finishes current target then waits. Called by `make loop-pause`. |
 | `bin/loop_reset.py` | Mac | Resets both state files to blank, commits and pushes — all targets will re-run from scratch |
 | `bin/loop_status.py` | Either | Prints current status, completed/failed targets, attempt counts from `loop-run-state.json` |
-| `bin/loop_ack.py` | Mac | Acknowledges a `needs_human` pause — sets `fix_pushed=true` and resumes the loop. Used when a human action was required (e.g. credential refresh). |
-| `bin/opencode_loop.py` | Mac | Polls `loop-run-state.json` for failures, invokes OpenCode to diagnose and fix, pushes the fix, and sets `fix_pushed=true` so the runner retries |
+| `bin/loop_ack.py` | Mac | Acknowledges a `needs_human` pause or resumes after `make loop-pause` — sets `fix_pushed=true` and clears signals. |
+| `bin/opencode_loop.py` | Mac | Polls `loop-run-state.json` for failures, invokes OpenCode to diagnose and fix, pushes the fix, and sets `fix_pushed=true` so the runner retries. This is what `make loop-start-receiver` runs. |
 | `bin/trim_loop_context.py` | Mac | Caps `loop-context.md` at 500 lines — archives overflow to `docs/loop-context-archive.md`. Called automatically by `opencode_loop.py` after every fix. |
 
 ---

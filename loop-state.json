@@ -6,5 +6,7 @@
   "deps": {},
   "max_attempts": 10,
   "human_action": null,
-  "blocker_patterns": []
+  "blocker_patterns": [],
+  "stop": false,
+  "pause": false
 }
