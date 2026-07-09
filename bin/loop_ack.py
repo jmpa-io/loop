@@ -2,8 +2,8 @@
 """
 bin/loop_ack.py — acknowledge a human action and resume the loop.
 
-Sets fix_pushed=true in loop-state.json and clears human_action in
-loop-run-state.json, then commits and pushes so the runner picks it up.
+Sets fix_pushed=true in receiver-state.json and clears human_action in
+sender-state.json, then commits and pushes so the sender picks it up.
 Retries up to 5 times on push conflict.
 """
 
@@ -18,15 +18,14 @@ REPO = lib.repo_root()
 
 
 def apply_ack() -> None:
-    oc = lib.load_oc_state(REPO)
-    oc["fix_pushed"] = True
-    oc["waiting_for_fix"] = False
-    lib.save_oc_state(REPO, oc)
+    rc = lib.load_receiver_state(REPO)
+    rc["fix_pushed"] = True
+    lib.save_receiver_state(REPO, rc)
 
-    run = lib.load_run_state(REPO)
-    run["human_action"] = None
-    run["status"] = "running"
-    lib.save_run_state(REPO, run)
+    sender = lib.load_sender_state(REPO)
+    sender["human_action"] = None
+    sender["status"] = "running"
+    lib.save_sender_state(REPO, sender)
 
 
 def main() -> None:
@@ -36,7 +35,7 @@ def main() -> None:
         lib.git(REPO, "pull", "origin", branch, "--rebase", "--quiet")
         apply_ack()
 
-        lib.git(REPO, "add", "loop-state.json", "loop-run-state.json")
+        lib.git(REPO, "add", "receiver-state.json", "sender-state.json")
         r = lib.git(REPO, "diff", "--staged", "--quiet")
         if r.returncode == 0:
             print("Already acked — nothing to commit")

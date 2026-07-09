@@ -45,7 +45,7 @@ def main() -> None:
     # Auto-create loop-context.md if it doesn't exist so OpenCode has a file to read/append.
     context_file = REPO / "loop-context.md"
     if not context_file.exists():
-        oc_state = lib.load_oc_state(REPO)
+        oc_state = lib.load_receiver_state(REPO)
         targets = oc_state.get("targets", [])
         max_attempts = oc_state.get("max_attempts", 10)
         targets_table = "\n".join(

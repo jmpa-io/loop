@@ -4,6 +4,12 @@ bin/lib.py — shared library for the loop scripts.
 All state I/O, git operations, dependency resolution, and hardware-blocker
 detection live here so every other script imports rather than duplicates them,
 and tests can exercise the logic without subprocesses.
+
+File ownership:
+    sender-state.json   — written ONLY by the sender (loop.py / loop_resilient.py)
+    receiver-state.json — written ONLY by the receiver (opencode_loop.py) and
+                          human-facing scripts (loop_reset, loop_stop, loop_pause,
+                          loop_ack) which act on behalf of the receiver/operator.
 """
 
 from __future__ import annotations
@@ -81,20 +87,24 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
-def load_run_state(repo: Path) -> dict:
-    return load_json(repo / "loop-run-state.json")
+def load_sender_state(repo: Path) -> dict:
+    """Load sender-state.json (runtime state written by the sender)."""
+    return load_json(repo / "sender-state.json")
 
 
-def load_oc_state(repo: Path) -> dict:
-    return load_json(repo / "loop-state.json")
+def load_receiver_state(repo: Path) -> dict:
+    """Load receiver-state.json (config + signals written by the receiver)."""
+    return load_json(repo / "receiver-state.json")
 
 
-def save_run_state(repo: Path, data: dict) -> None:
-    save_json(repo / "loop-run-state.json", data)
+def save_sender_state(repo: Path, data: dict) -> None:
+    """Save sender-state.json. Only the sender should call this."""
+    save_json(repo / "sender-state.json", data)
 
 
-def save_oc_state(repo: Path, data: dict) -> None:
-    save_json(repo / "loop-state.json", data)
+def save_receiver_state(repo: Path, data: dict) -> None:
+    """Save receiver-state.json. Only the receiver (or operator scripts) should call this."""
+    save_json(repo / "receiver-state.json", data)
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +136,14 @@ def git_pull(repo: Path, branch: str) -> None:
     """
     Pull with rebase, preserving completed_targets across the pull.
 
-    Problem: --autostash stashes loop-run-state.json, then the stash-pop
+    Problem: --autostash stashes sender-state.json, then the stash-pop
     merges it back. During stash-pop 'our side' is the just-pulled remote
     version, so the stash is discarded and completed_targets can shrink.
 
     Fix: snapshot the file first, then merge by taking the UNION of
     completed_targets after the pull.
     """
-    run_state_path = repo / "loop-run-state.json"
-    backup = load_run_state(repo)
+    backup = load_sender_state(repo)
 
     git(
         repo,
@@ -149,7 +158,7 @@ def git_pull(repo: Path, branch: str) -> None:
     )
 
     if backup:
-        current = load_run_state(repo)
+        current = load_sender_state(repo)
         current_completed = set(current.get("completed_targets", []))
         backup_completed = set(backup.get("completed_targets", []))
         merged_completed = list(backup_completed | current_completed)
@@ -163,12 +172,12 @@ def git_pull(repo: Path, branch: str) -> None:
         if merged_failed != current.get("failed_targets", []):
             current["failed_targets"] = merged_failed
 
-        save_run_state(repo, current)
+        save_sender_state(repo, current)
 
 
-def push_run_state(repo: Path, branch: str, message: str) -> None:
-    """Stage loop-run-state.json + runs/, commit, pull-rebase, push."""
-    git(repo, "add", "loop-run-state.json", "runs/")
+def push_sender_state(repo: Path, branch: str, message: str) -> None:
+    """Stage sender-state.json + runs/, commit, pull-rebase, push."""
+    git(repo, "add", "sender-state.json", "runs/")
     r = git(repo, "diff", "--staged", "--quiet")
     if r.returncode == 0:
         return  # nothing to commit
@@ -185,7 +194,7 @@ def push_run_state(repo: Path, branch: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def dep_status(target: str, run_state: dict, oc_state: dict) -> str:
+def dep_status(target: str, sender_state: dict, receiver_state: dict) -> str:
     """
     Return 'ready', 'waiting', or 'blocked' for a target.
 
@@ -193,9 +202,9 @@ def dep_status(target: str, run_state: dict, oc_state: dict) -> str:
     blocked — at least one dep has permanently failed (max retries hit)
     waiting — deps exist but haven't completed or failed yet
     """
-    deps = oc_state.get("deps", {}).get(target, [])
-    completed = set(run_state.get("completed_targets", []))
-    failed = set(run_state.get("failed_targets", []))
+    deps = receiver_state.get("deps", {}).get(target, [])
+    completed = set(sender_state.get("completed_targets", []))
+    failed = set(sender_state.get("failed_targets", []))
     if any(d in failed for d in deps):
         return "blocked"
     if all(d in completed for d in deps):
@@ -203,7 +212,7 @@ def dep_status(target: str, run_state: dict, oc_state: dict) -> str:
     return "waiting"
 
 
-def build_snapshot(run_state: dict, oc_state: dict) -> dict:
+def build_snapshot(sender_state: dict, receiver_state: dict) -> dict:
     """
     Compute ready / waiting / skipped sets for all targets.
 
@@ -217,10 +226,10 @@ def build_snapshot(run_state: dict, oc_state: dict) -> dict:
             "skipped": [(target, reason), ...],
         }
     """
-    targets = oc_state.get("targets", [])
-    deps_map = oc_state.get("deps", {})
-    completed = set(run_state.get("completed_targets", []))
-    failed = set(run_state.get("failed_targets", []))
+    targets = receiver_state.get("targets", [])
+    deps_map = receiver_state.get("deps", {})
+    completed = set(sender_state.get("completed_targets", []))
+    failed = set(sender_state.get("failed_targets", []))
     done = completed | failed
     effective_failed = set(failed)
 
@@ -245,12 +254,12 @@ def build_snapshot(run_state: dict, oc_state: dict) -> dict:
     return {"ready": ready, "waiting": waiting, "skipped": skipped}
 
 
-def all_targets_done(run_state: dict, oc_state: dict) -> bool:
+def all_targets_done(sender_state: dict, receiver_state: dict) -> bool:
     """Return True when every target is either completed, failed, or skipped."""
-    snapshot = build_snapshot(run_state, oc_state)
-    targets = oc_state.get("targets", [])
-    completed = set(run_state.get("completed_targets", []))
-    failed = set(run_state.get("failed_targets", []))
+    snapshot = build_snapshot(sender_state, receiver_state)
+    targets = receiver_state.get("targets", [])
+    completed = set(sender_state.get("completed_targets", []))
+    failed = set(sender_state.get("failed_targets", []))
     skipped = {t for t, _ in snapshot["skipped"]}
     done = completed | failed | skipped
     return all(t in done for t in targets) and not snapshot["ready"]
@@ -269,8 +278,6 @@ def check_hardware_blocker(log_content: str, patterns: list[dict]) -> str:
         { "pattern": "<regex>", "message": "<human-readable description>" }
 
     Returns the message of the first match, or "" if none matched.
-    These patterns come from loop-state.json["blocker_patterns"] so the loop
-    repo itself contains no hardcoded infrastructure assumptions.
     """
     for entry in patterns:
         regex = entry.get("pattern", "")
@@ -312,9 +319,9 @@ def parse_last_word(output: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def is_already_completed(target: str, run_state: dict) -> bool:
+def is_already_completed(target: str, sender_state: dict) -> bool:
     """True if target is already in completed_targets (prevents re-running)."""
-    return target in run_state.get("completed_targets", [])
+    return target in sender_state.get("completed_targets", [])
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +329,12 @@ def is_already_completed(target: str, run_state: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def apply_target_success(run_state: dict, target: str) -> dict:
+def apply_target_success(sender_state: dict, target: str) -> dict:
     """
-    Return an updated run_state reflecting a successful target run.
+    Return an updated sender_state reflecting a successful target run.
     Does not write to disk — caller is responsible for saving.
     """
-    run = dict(run_state)
+    run = dict(sender_state)
     run.setdefault("completed_targets", [])
     if target not in run["completed_targets"]:
         run["completed_targets"] = run["completed_targets"] + [target]
@@ -342,16 +349,16 @@ def apply_target_success(run_state: dict, target: str) -> dict:
 
 
 def apply_target_failure(
-    run_state: dict, target: str, max_attempts: int
+    sender_state: dict, target: str, max_attempts: int
 ) -> tuple[dict, bool]:
     """
-    Return (updated_run_state, permanently_failed).
+    Return (updated_sender_state, permanently_failed).
 
     permanently_failed is True when attempt count has reached max_attempts,
     in which case the target is added to failed_targets.
     Does not write to disk — caller is responsible for saving.
     """
-    run = dict(run_state)
+    run = dict(sender_state)
     run.setdefault("attempts", {})
     attempt = run["attempts"].get(target, 1)
     run["attempts"] = {**run["attempts"], target: attempt + 1}
@@ -368,19 +375,19 @@ def apply_target_failure(
     return run, permanently_failed
 
 
-def initialise_run_state(existing_run: dict | None, oc_state: dict) -> dict:
+def initialise_sender_state(existing: dict | None, receiver_state: dict) -> dict:
     """
-    Return a fresh or updated run_state based on oc_state configuration.
+    Return a fresh or updated sender_state based on receiver_state configuration.
 
-    If existing_run is None (first start), returns a blank running state.
-    If existing_run is provided (restart), preserves completed/failed targets
-    and updates targets + max_attempts from oc_state.
+    If existing is None (first start), returns a blank running state.
+    If existing is provided (restart), preserves completed/failed targets
+    and updates targets + max_attempts from receiver_state.
     Does not write to disk — caller is responsible for saving.
     """
-    targets = oc_state.get("targets", [])
-    max_att = oc_state.get("max_attempts", 10)
+    targets = receiver_state.get("targets", [])
+    max_att = receiver_state.get("max_attempts", 10)
 
-    if existing_run is None:
+    if existing is None:
         return {
             "status": "running",
             "targets": targets,
@@ -393,50 +400,58 @@ def initialise_run_state(existing_run: dict | None, oc_state: dict) -> dict:
             "human_action": None,
         }
 
-    run = dict(existing_run)
+    run = dict(existing)
     run.setdefault("failed_targets", [])
     run.setdefault("attempts", {})
     run["targets"] = targets
     run["max_attempts"] = max_att
-    # Only clear needs_human if status is idle/None (genuine fresh start)
     if run.get("status") in ("idle", None):
         run["status"] = "running"
         run["human_action"] = None
-    # Remove legacy sequential fields
     for k in ("current_target", "current_index", "current_attempt"):
         run.pop(k, None)
     return run
 
 
-def apply_stop_signal(oc_state: dict) -> dict:
-    """Return updated oc_state with stop signal set."""
-    oc = dict(oc_state)
-    oc["stop"] = True
-    oc.pop("pause", None)
-    return oc
+def apply_stop_signal(receiver_state: dict) -> dict:
+    """Return updated receiver_state with stop signal set."""
+    rc = dict(receiver_state)
+    rc["stop"] = True
+    rc.pop("pause", None)
+    return rc
 
 
-def apply_pause_signal(oc_state: dict) -> dict:
-    """Return updated oc_state with pause signal set."""
-    oc = dict(oc_state)
-    oc["pause"] = True
-    oc.pop("stop", None)
-    return oc
+def apply_pause_signal(receiver_state: dict) -> dict:
+    """Return updated receiver_state with pause signal set."""
+    rc = dict(receiver_state)
+    rc["pause"] = True
+    rc.pop("stop", None)
+    return rc
 
 
-def clear_signals(oc_state: dict) -> dict:
-    """Return updated oc_state with stop/pause signals cleared."""
-    oc = dict(oc_state)
-    oc.pop("stop", None)
-    oc.pop("pause", None)
-    return oc
+def clear_signals(receiver_state: dict) -> dict:
+    """Return updated receiver_state with stop/pause signals cleared."""
+    rc = dict(receiver_state)
+    rc.pop("stop", None)
+    rc.pop("pause", None)
+    return rc
 
 
-def should_stop(oc_state: dict) -> bool:
+def should_stop(receiver_state: dict) -> bool:
     """True if a stop signal is set."""
-    return bool(oc_state.get("stop"))
+    return bool(receiver_state.get("stop"))
 
 
-def should_pause(oc_state: dict) -> bool:
+def should_pause(receiver_state: dict) -> bool:
     """True if a pause signal is set."""
-    return bool(oc_state.get("pause"))
+    return bool(receiver_state.get("pause"))
+
+
+def sender_needs_fix(sender_state: dict) -> bool:
+    """
+    True if the sender is currently waiting for a fix from the receiver.
+    The receiver infers this from sender-state.json — no waiting_for_fix flag needed.
+    """
+    return sender_state.get("last_result") == "failed" and sender_state.get(
+        "status"
+    ) not in ("needs_human", "completed", "completed_with_failures")

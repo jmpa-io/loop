@@ -1,7 +1,7 @@
 # loop/Makefile — included by consuming repos via: include .loop/Makefile
 #
 # Provides make targets for the AI self-healing deployment loop.
-# State files (loop-state.json, loop-run-state.json) live in the consuming
+# State files (sender-state.json, receiver-state.json) live in the consuming
 # repo root, not inside this submodule.
 #
 # Usage in consuming repo's Makefile:

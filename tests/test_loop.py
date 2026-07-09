@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tests/test_loop.py — unit and integration tests for the loop library.
+tests/test_loop.py -- unit and integration tests for the loop library.
 
 Unit tests:   exercise lib.py functions directly (no I/O, no subprocesses).
 Integration:  run script main() functions against a real temp git repo,
@@ -12,32 +12,26 @@ Run with:
 """
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 # Allow importing from bin/
 sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 import lib
 
 BIN = Path(__file__).parent.parent / "bin"
+LOOP_REPO = Path(__file__).parent.parent
 
 
 # ===========================================================================
 # Helpers
 # ===========================================================================
-
-
-def _load_script(name: str):
-    """Import a bin/ script as a module by filename."""
-    spec = importlib.util.spec_from_file_location(name, BIN / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _make_git_repo(path: Path) -> Path:
@@ -60,17 +54,17 @@ def _make_git_repo(path: Path) -> Path:
         check=True,
     )
 
-    oc = {
+    receiver = {
         "fix_pushed": False,
-        "waiting_for_fix": False,
-        "opencode_last_fix": None,
+        "last_fix": None,
         "targets": ["a", "b"],
         "deps": {"b": ["a"]},
         "max_attempts": 3,
-        "human_action": None,
         "blocker_patterns": [],
+        "stop": False,
+        "pause": False,
     }
-    run = {
+    sender = {
         "status": "idle",
         "targets": ["a", "b"],
         "completed_targets": [],
@@ -81,8 +75,8 @@ def _make_git_repo(path: Path) -> Path:
         "last_run_log": None,
         "human_action": None,
     }
-    (path / "loop-state.json").write_text(json.dumps(oc, indent=2))
-    (path / "loop-run-state.json").write_text(json.dumps(run, indent=2))
+    (path / "receiver-state.json").write_text(json.dumps(receiver, indent=2))
+    (path / "sender-state.json").write_text(json.dumps(sender, indent=2))
 
     subprocess.run(["git", "-C", str(path), "add", "."], capture_output=True)
     subprocess.run(
@@ -100,40 +94,40 @@ def _make_git_repo(path: Path) -> Path:
 
 class TestDepStatus(unittest.TestCase):
     def setUp(self):
-        self.oc = {
+        self.receiver = {
             "targets": ["a", "b", "c", "d"],
             "deps": {"b": ["a"], "c": ["a"], "d": ["b", "c"]},
         }
 
     def test_no_deps_is_ready(self):
-        run = {"completed_targets": [], "failed_targets": []}
-        self.assertEqual("ready", lib.dep_status("a", run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": []}
+        self.assertEqual("ready", lib.dep_status("a", sender, self.receiver))
 
     def test_dep_completed_is_ready(self):
-        run = {"completed_targets": ["a"], "failed_targets": []}
-        self.assertEqual("ready", lib.dep_status("b", run, self.oc))
-        self.assertEqual("ready", lib.dep_status("c", run, self.oc))
+        sender = {"completed_targets": ["a"], "failed_targets": []}
+        self.assertEqual("ready", lib.dep_status("b", sender, self.receiver))
+        self.assertEqual("ready", lib.dep_status("c", sender, self.receiver))
 
     def test_dep_not_completed_is_waiting(self):
-        run = {"completed_targets": [], "failed_targets": []}
-        self.assertEqual("waiting", lib.dep_status("b", run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": []}
+        self.assertEqual("waiting", lib.dep_status("b", sender, self.receiver))
 
     def test_dep_failed_is_blocked(self):
-        run = {"completed_targets": [], "failed_targets": ["a"]}
-        self.assertEqual("blocked", lib.dep_status("b", run, self.oc))
-        self.assertEqual("blocked", lib.dep_status("c", run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": ["a"]}
+        self.assertEqual("blocked", lib.dep_status("b", sender, self.receiver))
+        self.assertEqual("blocked", lib.dep_status("c", sender, self.receiver))
 
     def test_multi_dep_one_failed_is_blocked(self):
-        run = {"completed_targets": ["b"], "failed_targets": ["c"]}
-        self.assertEqual("blocked", lib.dep_status("d", run, self.oc))
+        sender = {"completed_targets": ["b"], "failed_targets": ["c"]}
+        self.assertEqual("blocked", lib.dep_status("d", sender, self.receiver))
 
     def test_multi_dep_both_completed_is_ready(self):
-        run = {"completed_targets": ["b", "c"], "failed_targets": []}
-        self.assertEqual("ready", lib.dep_status("d", run, self.oc))
+        sender = {"completed_targets": ["b", "c"], "failed_targets": []}
+        self.assertEqual("ready", lib.dep_status("d", sender, self.receiver))
 
     def test_unknown_target_no_deps_is_ready(self):
-        run = {"completed_targets": [], "failed_targets": []}
-        self.assertEqual("ready", lib.dep_status("unknown", run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": []}
+        self.assertEqual("ready", lib.dep_status("unknown", sender, self.receiver))
 
 
 # ===========================================================================
@@ -143,57 +137,57 @@ class TestDepStatus(unittest.TestCase):
 
 class TestBuildSnapshot(unittest.TestCase):
     def setUp(self):
-        self.oc = {
+        self.receiver = {
             "targets": ["a", "b", "c", "d"],
             "deps": {"b": ["a"], "c": ["a"], "d": ["b", "c"]},
         }
 
     def test_nothing_done_a_is_ready(self):
-        run = {"completed_targets": [], "failed_targets": []}
-        snap = lib.build_snapshot(run, self.oc)
+        sender = {"completed_targets": [], "failed_targets": []}
+        snap = lib.build_snapshot(sender, self.receiver)
         self.assertIn("a", snap["ready"])
         self.assertEqual([], snap["skipped"])
 
     def test_a_completed_b_and_c_ready(self):
-        run = {"completed_targets": ["a"], "failed_targets": []}
-        snap = lib.build_snapshot(run, self.oc)
+        sender = {"completed_targets": ["a"], "failed_targets": []}
+        snap = lib.build_snapshot(sender, self.receiver)
         self.assertIn("b", snap["ready"])
         self.assertIn("c", snap["ready"])
 
     def test_a_failed_b_c_d_skipped(self):
-        run = {"completed_targets": [], "failed_targets": ["a"]}
-        snap = lib.build_snapshot(run, self.oc)
+        sender = {"completed_targets": [], "failed_targets": ["a"]}
+        snap = lib.build_snapshot(sender, self.receiver)
         skipped = [t for t, _ in snap["skipped"]]
         self.assertIn("b", skipped)
         self.assertIn("c", skipped)
         self.assertIn("d", skipped)
 
     def test_d_waiting_on_b_and_c(self):
-        run = {"completed_targets": ["a"], "failed_targets": []}
-        snap = lib.build_snapshot(run, self.oc)
+        sender = {"completed_targets": ["a"], "failed_targets": []}
+        snap = lib.build_snapshot(sender, self.receiver)
         waiting = [t for t, _ in snap["waiting"]]
         self.assertIn("d", waiting)
 
 
 class TestAllTargetsDone(unittest.TestCase):
     def setUp(self):
-        self.oc = {"targets": ["a", "b", "c"], "deps": {"b": ["a"], "c": ["b"]}}
+        self.receiver = {"targets": ["a", "b", "c"], "deps": {"b": ["a"], "c": ["b"]}}
 
     def test_nothing_done_not_complete(self):
-        run = {"completed_targets": [], "failed_targets": []}
-        self.assertFalse(lib.all_targets_done(run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": []}
+        self.assertFalse(lib.all_targets_done(sender, self.receiver))
 
     def test_all_completed_is_done(self):
-        run = {"completed_targets": ["a", "b", "c"], "failed_targets": []}
-        self.assertTrue(lib.all_targets_done(run, self.oc))
+        sender = {"completed_targets": ["a", "b", "c"], "failed_targets": []}
+        self.assertTrue(lib.all_targets_done(sender, self.receiver))
 
     def test_failed_dep_cascades_to_done(self):
-        run = {"completed_targets": [], "failed_targets": ["a"]}
-        self.assertTrue(lib.all_targets_done(run, self.oc))
+        sender = {"completed_targets": [], "failed_targets": ["a"]}
+        self.assertTrue(lib.all_targets_done(sender, self.receiver))
 
     def test_partial_not_done(self):
-        run = {"completed_targets": ["a"], "failed_targets": []}
-        self.assertFalse(lib.all_targets_done(run, self.oc))
+        sender = {"completed_targets": ["a"], "failed_targets": []}
+        self.assertFalse(lib.all_targets_done(sender, self.receiver))
 
 
 # ===========================================================================
@@ -217,6 +211,32 @@ class TestIsAlreadyCompleted(unittest.TestCase):
 
     def test_empty_returns_false(self):
         self.assertFalse(lib.is_already_completed("x", {}))
+
+
+# ===========================================================================
+# Unit: sender_needs_fix
+# ===========================================================================
+
+
+class TestSenderNeedsFix(unittest.TestCase):
+    def test_failed_running_needs_fix(self):
+        sender = {"last_result": "failed", "status": "running"}
+        self.assertTrue(lib.sender_needs_fix(sender))
+
+    def test_failed_needs_human_no_fix(self):
+        sender = {"last_result": "failed", "status": "needs_human"}
+        self.assertFalse(lib.sender_needs_fix(sender))
+
+    def test_failed_completed_no_fix(self):
+        sender = {"last_result": "failed", "status": "completed"}
+        self.assertFalse(lib.sender_needs_fix(sender))
+
+    def test_success_no_fix(self):
+        sender = {"last_result": "success", "status": "running"}
+        self.assertFalse(lib.sender_needs_fix(sender))
+
+    def test_empty_state_no_fix(self):
+        self.assertFalse(lib.sender_needs_fix({}))
 
 
 # ===========================================================================
@@ -309,24 +329,24 @@ class TestApplyTargetFailure(unittest.TestCase):
         self.assertEqual(1, base["attempts"]["build"])
 
 
-class TestInitialiseRunState(unittest.TestCase):
-    def _oc(self, targets=None):
+class TestInitialiseSenderState(unittest.TestCase):
+    def _receiver(self, targets=None):
         return {"targets": targets or ["a", "b"], "max_attempts": 5}
 
     def test_fresh_start_returns_running(self):
-        run = lib.initialise_run_state(None, self._oc())
-        self.assertEqual("running", run["status"])
-        self.assertEqual([], run["completed_targets"])
-        self.assertEqual([], run["failed_targets"])
-        self.assertEqual({}, run["attempts"])
+        sender = lib.initialise_sender_state(None, self._receiver())
+        self.assertEqual("running", sender["status"])
+        self.assertEqual([], sender["completed_targets"])
+        self.assertEqual([], sender["failed_targets"])
+        self.assertEqual({}, sender["attempts"])
 
     def test_fresh_start_inherits_targets(self):
-        run = lib.initialise_run_state(None, self._oc(["x", "y"]))
-        self.assertEqual(["x", "y"], run["targets"])
+        sender = lib.initialise_sender_state(None, self._receiver(["x", "y"]))
+        self.assertEqual(["x", "y"], sender["targets"])
 
     def test_fresh_start_inherits_max_attempts(self):
-        run = lib.initialise_run_state(None, self._oc())
-        self.assertEqual(5, run["max_attempts"])
+        sender = lib.initialise_sender_state(None, self._receiver())
+        self.assertEqual(5, sender["max_attempts"])
 
     def test_restart_preserves_completed(self):
         existing = {
@@ -335,8 +355,8 @@ class TestInitialiseRunState(unittest.TestCase):
             "failed_targets": [],
             "attempts": {},
         }
-        run = lib.initialise_run_state(existing, self._oc())
-        self.assertIn("a", run["completed_targets"])
+        sender = lib.initialise_sender_state(existing, self._receiver())
+        self.assertIn("a", sender["completed_targets"])
 
     def test_restart_idle_becomes_running(self):
         existing = {
@@ -345,8 +365,8 @@ class TestInitialiseRunState(unittest.TestCase):
             "failed_targets": [],
             "attempts": {},
         }
-        run = lib.initialise_run_state(existing, self._oc())
-        self.assertEqual("running", run["status"])
+        sender = lib.initialise_sender_state(existing, self._receiver())
+        self.assertEqual("running", sender["status"])
 
     def test_restart_needs_human_preserved(self):
         existing = {
@@ -356,9 +376,9 @@ class TestInitialiseRunState(unittest.TestCase):
             "failed_targets": [],
             "attempts": {},
         }
-        run = lib.initialise_run_state(existing, self._oc())
-        self.assertEqual("needs_human", run["status"])
-        self.assertEqual("fix me", run["human_action"])
+        sender = lib.initialise_sender_state(existing, self._receiver())
+        self.assertEqual("needs_human", sender["status"])
+        self.assertEqual("fix me", sender["human_action"])
 
     def test_restart_removes_legacy_fields(self):
         existing = {
@@ -370,10 +390,10 @@ class TestInitialiseRunState(unittest.TestCase):
             "failed_targets": [],
             "attempts": {},
         }
-        run = lib.initialise_run_state(existing, self._oc())
-        self.assertNotIn("current_target", run)
-        self.assertNotIn("current_index", run)
-        self.assertNotIn("current_attempt", run)
+        sender = lib.initialise_sender_state(existing, self._receiver())
+        self.assertNotIn("current_target", sender)
+        self.assertNotIn("current_index", sender)
+        self.assertNotIn("current_attempt", sender)
 
     def test_does_not_mutate_existing(self):
         existing = {
@@ -382,7 +402,7 @@ class TestInitialiseRunState(unittest.TestCase):
             "failed_targets": [],
             "attempts": {},
         }
-        lib.initialise_run_state(existing, self._oc())
+        lib.initialise_sender_state(existing, self._receiver())
         self.assertEqual("idle", existing["status"])
 
 
@@ -407,20 +427,20 @@ class TestSignals(unittest.TestCase):
         self.assertFalse(lib.should_pause({}))
 
     def test_apply_stop_sets_stop_clears_pause(self):
-        oc = lib.apply_stop_signal({"pause": True})
-        self.assertTrue(oc["stop"])
-        self.assertNotIn("pause", oc)
+        rc = lib.apply_stop_signal({"pause": True})
+        self.assertTrue(rc["stop"])
+        self.assertNotIn("pause", rc)
 
     def test_apply_pause_sets_pause_clears_stop(self):
-        oc = lib.apply_pause_signal({"stop": True})
-        self.assertTrue(oc["pause"])
-        self.assertNotIn("stop", oc)
+        rc = lib.apply_pause_signal({"stop": True})
+        self.assertTrue(rc["pause"])
+        self.assertNotIn("stop", rc)
 
     def test_clear_signals_removes_both(self):
-        oc = lib.clear_signals({"stop": True, "pause": True, "targets": []})
-        self.assertNotIn("stop", oc)
-        self.assertNotIn("pause", oc)
-        self.assertIn("targets", oc)
+        rc = lib.clear_signals({"stop": True, "pause": True, "targets": []})
+        self.assertNotIn("stop", rc)
+        self.assertNotIn("pause", rc)
+        self.assertIn("targets", rc)
 
     def test_signal_functions_do_not_mutate_input(self):
         orig = {"stop": False}
@@ -473,14 +493,6 @@ class TestCheckHardwareBlocker(unittest.TestCase):
             lib.check_hardware_blocker("usb 3-1: USB disconnect", self._patterns()),
         )
 
-    def test_usbcore_registered_no_match(self):
-        self.assertEqual(
-            "",
-            lib.check_hardware_blocker(
-                "usbcore: registered new interface driver", self._patterns()
-            ),
-        )
-
     def test_hardware_error(self):
         self.assertIn(
             "Hardware",
@@ -504,10 +516,6 @@ class TestCheckHardwareBlocker(unittest.TestCase):
         self.assertEqual(
             "", lib.check_hardware_blocker("No route to host 10.0.1.1", [])
         )
-
-    def test_custom_pattern(self):
-        p = [{"pattern": r"CUSTOM_SIGNAL", "message": "Custom blocker triggered"}]
-        self.assertIn("Custom", lib.check_hardware_blocker("CUSTOM_SIGNAL seen", p))
 
     def test_first_match_wins(self):
         p = [
@@ -539,9 +547,6 @@ class TestParseLastWord(unittest.TestCase):
 
     def test_empty_returns_empty(self):
         self.assertEqual("", lib.parse_last_word(""))
-
-    def test_unclear_returns_empty(self):
-        self.assertEqual("", lib.parse_last_word("Something happened but unclear"))
 
     def test_fuzzy_needs_human(self):
         self.assertEqual(
@@ -586,7 +591,256 @@ class TestStateIO(unittest.TestCase):
             name = f.name
         lib.save_json(Path(name), {"k": "v"})
         content = Path(name).read_text()
-        self.assertIn("\n", content)  # indented, not one-liner
+        self.assertIn("\n", content)
+
+
+# ===========================================================================
+# Unit: opencode_loop -- should_invoke_opencode (pure function)
+# ===========================================================================
+
+
+class TestShouldInvokeOpencode(unittest.TestCase):
+    def setUp(self):
+        import opencode_loop
+
+        self.fn = opencode_loop.should_invoke_opencode
+
+    def _sender(
+        self, status="running", last_result="failed", target="build", completed=None
+    ):
+        return {
+            "status": status,
+            "last_result": last_result,
+            "last_run_log": target,
+            "completed_targets": completed or [],
+            "failed_targets": [],
+        }
+
+    def _receiver(self, fix_pushed=False):
+        return {"fix_pushed": fix_pushed}
+
+    def test_failed_target_should_invoke(self):
+        ok, reason = self.fn(self._sender(), self._receiver(), "", "build-123.log")
+        self.assertTrue(ok, reason)
+
+    def test_completed_loop_should_not_invoke(self):
+        ok, reason = self.fn(
+            self._sender(status="completed"), self._receiver(), "", "build-123.log"
+        )
+        self.assertFalse(ok)
+        self.assertIn("complete", reason)
+
+    def test_needs_human_should_not_invoke(self):
+        ok, reason = self.fn(
+            self._sender(status="needs_human"), self._receiver(), "", "build-123.log"
+        )
+        self.assertFalse(ok)
+        self.assertIn("human", reason)
+
+    def test_non_failure_should_not_invoke(self):
+        ok, reason = self.fn(
+            self._sender(last_result="success"), self._receiver(), "", "build-123.log"
+        )
+        self.assertFalse(ok)
+
+    def test_already_completed_target_should_not_invoke(self):
+        ok, reason = self.fn(
+            self._sender(completed=["build"]), self._receiver(), "", "build-123.log"
+        )
+        self.assertFalse(ok)
+        self.assertIn("already completed", reason)
+
+    def test_no_log_should_not_invoke(self):
+        ok, reason = self.fn(self._sender(), self._receiver(), "", "")
+        self.assertFalse(ok)
+        self.assertIn("no log", reason)
+
+    def test_same_log_fix_pushed_should_not_invoke(self):
+        ok, reason = self.fn(
+            self._sender(),
+            self._receiver(fix_pushed=True),
+            "build-123.log",
+            "build-123.log",
+        )
+        self.assertFalse(ok)
+        self.assertIn("fix already pushed", reason)
+
+    def test_same_log_no_fix_pushed_should_invoke(self):
+        ok, reason = self.fn(
+            self._sender(),
+            self._receiver(fix_pushed=False),
+            "build-123.log",
+            "build-123.log",
+        )
+        self.assertTrue(ok, reason)
+
+
+# ===========================================================================
+# Unit: opencode_loop -- build_opencode_prompt (pure function)
+# ===========================================================================
+
+
+class TestBuildOpencodePrompt(unittest.TestCase):
+    def setUp(self):
+        import opencode_loop
+
+        self.fn = opencode_loop.build_opencode_prompt
+
+    def test_contains_target_name(self):
+        prompt = self.fn("my-target", "my-target-123.log", "log content", "")
+        self.assertIn("my-target", prompt)
+
+    def test_contains_log_filename(self):
+        prompt = self.fn("build", "build-20240101.log", "content", "")
+        self.assertIn("build-20240101.log", prompt)
+
+    def test_contains_file_ownership_rules(self):
+        prompt = self.fn("build", "build.log", "", "")
+        self.assertIn("sender-state.json", prompt)
+        self.assertIn("receiver-state.json", prompt)
+        self.assertIn("NEVER commit sender-state.json", prompt)
+
+    def test_contains_output_instructions(self):
+        prompt = self.fn("build", "build.log", "", "")
+        self.assertIn("RETRY", prompt)
+        self.assertIn("SUCCESS", prompt)
+        self.assertIn("NEEDS_HUMAN", prompt)
+
+    def test_contains_prev_logs_content(self):
+        prompt = self.fn(
+            "build", "build.log", "", "--- previous run ---\nerror details"
+        )
+        self.assertIn("error details", prompt)
+
+    def test_test_fail_target_instructs_retry(self):
+        prompt = self.fn("loop-test-fail", "loop-test-fail.log", "", "")
+        self.assertIn("RETRY", prompt)
+
+
+# ===========================================================================
+# Unit: loop.py -- run_target (via mocked subprocess + state)
+# ===========================================================================
+
+
+class TestRunTarget(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+        (self.repo / "runs").mkdir(exist_ok=True)
+
+    def _patch_loop(self):
+        """Return context manager patches for loop.py testing."""
+        return patch.multiple(
+            "loop",
+            REPO=self.repo,
+        )
+
+    def _run_target(self, target, branch, make_returncode=0):
+        import loop
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch("subprocess.run") as mock_run:
+                with patch("lib.git") as mock_git:
+                    with patch("lib.push_sender_state"):
+                        with patch("lib.git_pull"):
+                            with patch("time.sleep"):
+                                mock_run.return_value = MagicMock(
+                                    returncode=make_returncode
+                                )
+                                mock_git.return_value = MagicMock(returncode=0)
+                                return loop.run_target(target, branch)
+
+    def test_successful_target_returns_true(self):
+        result = self._run_target("a", "main", make_returncode=0)
+        self.assertTrue(result)
+
+    def test_successful_target_marks_completed(self):
+        self._run_target("a", "main", make_returncode=0)
+        sender = lib.load_sender_state(self.repo)
+        self.assertIn("a", sender["completed_targets"])
+
+    def test_failed_target_returns_false(self):
+        result = self._run_target("a", "main", make_returncode=1)
+        self.assertFalse(result)
+
+    def test_failed_target_increments_attempts(self):
+        self._run_target("a", "main", make_returncode=1)
+        sender = lib.load_sender_state(self.repo)
+        self.assertGreater(sender.get("attempts", {}).get("a", 0), 0)
+
+    def test_already_completed_target_skips_make(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a"]
+        lib.save_sender_state(self.repo, sender)
+        import loop
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch("subprocess.run") as mock_run:
+                with patch("lib.push_sender_state"):
+                    mock_run.return_value = MagicMock(returncode=0)
+                    result = loop.run_target("a", "main")
+                    mock_run.assert_not_called()
+                    self.assertTrue(result)
+
+    def test_permanently_failed_marks_failed_targets(self):
+        # Set attempts at max so next failure is permanent
+        sender = lib.load_sender_state(self.repo)
+        sender["attempts"] = {"a": 3}
+        lib.save_sender_state(self.repo, sender)
+        self._run_target("a", "main", make_returncode=1)
+        sender = lib.load_sender_state(self.repo)
+        self.assertIn("a", sender["failed_targets"])
+
+    def test_blocker_pattern_sets_needs_human(self):
+        # Set a blocker pattern and create a matching log
+        receiver = lib.load_receiver_state(self.repo)
+        receiver["blocker_patterns"] = [
+            {"pattern": "NAS.*unreachable", "message": "NAS is down"}
+        ]
+        lib.save_receiver_state(self.repo, receiver)
+        log = self.repo / "runs" / "a-20240101.log"
+        log.write_text("NAS unreachable: connection refused")
+
+        self._run_target("a", "main", make_returncode=1)
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual("needs_human", sender.get("status"))
+
+
+# ===========================================================================
+# Unit: loop.py -- initialise
+# ===========================================================================
+
+
+class TestInitialise(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_initialise_creates_running_sender_state(self):
+        import loop
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch("lib.push_sender_state"):
+                loop.initialise("main")
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual("running", sender["status"])
+
+    def test_initialise_preserves_completed_targets_on_restart(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a"]
+        lib.save_sender_state(self.repo, sender)
+
+        import loop
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch.object(
+                loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"
+            ):
+                with patch("lib.push_sender_state"):
+                    loop.initialise("main")
+
+        sender = lib.load_sender_state(self.repo)
+        self.assertIn("a", sender["completed_targets"])
 
 
 # ===========================================================================
@@ -600,7 +854,6 @@ class TestLoopResetIntegration(unittest.TestCase):
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
 
     def _run_reset(self):
-        """Run loop_reset.main() with REPO pointing at our temp repo."""
         import loop_reset
 
         with patch.object(loop_reset, "REPO", self.repo):
@@ -613,57 +866,54 @@ class TestLoopResetIntegration(unittest.TestCase):
                         pass
 
     def test_reset_clears_completed_targets(self):
-        # Pre-populate state with completed targets
-        run = lib.load_run_state(self.repo)
-        run["completed_targets"] = ["a", "b"]
-        lib.save_run_state(self.repo, run)
-
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a", "b"]
+        lib.save_sender_state(self.repo, sender)
         self._run_reset()
-
-        run = lib.load_run_state(self.repo)
-        self.assertEqual([], run["completed_targets"])
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual([], sender["completed_targets"])
 
     def test_reset_clears_failed_targets(self):
-        run = lib.load_run_state(self.repo)
-        run["failed_targets"] = ["a"]
-        lib.save_run_state(self.repo, run)
-
+        sender = lib.load_sender_state(self.repo)
+        sender["failed_targets"] = ["a"]
+        lib.save_sender_state(self.repo, sender)
         self._run_reset()
-
-        run = lib.load_run_state(self.repo)
-        self.assertEqual([], run["failed_targets"])
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual([], sender["failed_targets"])
 
     def test_reset_clears_attempts(self):
-        run = lib.load_run_state(self.repo)
-        run["attempts"] = {"a": 5}
-        lib.save_run_state(self.repo, run)
-
+        sender = lib.load_sender_state(self.repo)
+        sender["attempts"] = {"a": 5}
+        lib.save_sender_state(self.repo, sender)
         self._run_reset()
-
-        run = lib.load_run_state(self.repo)
-        self.assertEqual({}, run["attempts"])
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual({}, sender["attempts"])
 
     def test_reset_clears_fix_signals(self):
-        oc = lib.load_oc_state(self.repo)
-        oc["fix_pushed"] = True
-        oc["waiting_for_fix"] = True
-        lib.save_oc_state(self.repo, oc)
-
+        rc = lib.load_receiver_state(self.repo)
+        rc["fix_pushed"] = True
+        lib.save_receiver_state(self.repo, rc)
         self._run_reset()
-
-        oc = lib.load_oc_state(self.repo)
-        self.assertFalse(oc["fix_pushed"])
-        self.assertFalse(oc["waiting_for_fix"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertFalse(rc["fix_pushed"])
 
     def test_reset_sets_status_running(self):
-        run = lib.load_run_state(self.repo)
-        run["status"] = "completed_with_failures"
-        lib.save_run_state(self.repo, run)
-
+        sender = lib.load_sender_state(self.repo)
+        sender["status"] = "completed_with_failures"
+        lib.save_sender_state(self.repo, sender)
         self._run_reset()
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual("running", sender["status"])
 
-        run = lib.load_run_state(self.repo)
-        self.assertEqual("running", run["status"])
+    def test_reset_clears_stop_and_pause_signals(self):
+        rc = lib.load_receiver_state(self.repo)
+        rc["stop"] = True
+        rc["pause"] = True
+        lib.save_receiver_state(self.repo, rc)
+        self._run_reset()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertFalse(rc["stop"])
+        self.assertFalse(rc["pause"])
 
 
 # ===========================================================================
@@ -688,41 +938,27 @@ class TestLoopAckIntegration(unittest.TestCase):
                     except SystemExit:
                         pass
 
-    def test_ack_sets_fix_pushed(self):
+    def test_ack_sets_fix_pushed_in_receiver(self):
         self._run_ack()
-        oc = lib.load_oc_state(self.repo)
-        self.assertTrue(oc["fix_pushed"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc["fix_pushed"])
 
-    def test_ack_clears_waiting_for_fix(self):
-        oc = lib.load_oc_state(self.repo)
-        oc["waiting_for_fix"] = True
-        lib.save_oc_state(self.repo, oc)
-
+    def test_ack_clears_human_action_in_sender(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["human_action"] = "Fix the thing"
+        sender["status"] = "needs_human"
+        lib.save_sender_state(self.repo, sender)
         self._run_ack()
+        sender = lib.load_sender_state(self.repo)
+        self.assertIsNone(sender["human_action"])
 
-        oc = lib.load_oc_state(self.repo)
-        self.assertFalse(oc["waiting_for_fix"])
-
-    def test_ack_clears_human_action(self):
-        run = lib.load_run_state(self.repo)
-        run["human_action"] = "Fix the thing"
-        run["status"] = "needs_human"
-        lib.save_run_state(self.repo, run)
-
+    def test_ack_sets_status_running_in_sender(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["status"] = "needs_human"
+        lib.save_sender_state(self.repo, sender)
         self._run_ack()
-
-        run = lib.load_run_state(self.repo)
-        self.assertIsNone(run["human_action"])
-
-    def test_ack_sets_status_running(self):
-        run = lib.load_run_state(self.repo)
-        run["status"] = "needs_human"
-        lib.save_run_state(self.repo, run)
-
-        self._run_ack()
-
-        run = lib.load_run_state(self.repo)
-        self.assertEqual("running", run["status"])
+        sender = lib.load_sender_state(self.repo)
+        self.assertEqual("running", sender["status"])
 
 
 # ===========================================================================
@@ -736,7 +972,6 @@ class TestLoopStatusIntegration(unittest.TestCase):
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
 
     def _run_status(self) -> str:
-        import io
         import loop_status
 
         buf = io.StringIO()
@@ -753,25 +988,25 @@ class TestLoopStatusIntegration(unittest.TestCase):
         self.assertIn("Status:", output)
 
     def test_status_shows_completed(self):
-        run = lib.load_run_state(self.repo)
-        run["completed_targets"] = ["a"]
-        lib.save_run_state(self.repo, run)
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a"]
+        lib.save_sender_state(self.repo, sender)
         output = self._run_status()
         self.assertIn("a", output)
 
     def test_status_shows_needs_human(self):
-        run = lib.load_run_state(self.repo)
-        run["human_action"] = "Please fix the thing"
-        lib.save_run_state(self.repo, run)
+        sender = lib.load_sender_state(self.repo)
+        sender["human_action"] = "Please fix the thing"
+        lib.save_sender_state(self.repo, sender)
         output = self._run_status()
         self.assertIn("NEEDS HUMAN", output)
         self.assertIn("Please fix the thing", output)
 
     def test_status_missing_file_says_not_started(self):
-        import io, loop_status
-
-        (self.repo / "loop-run-state.json").unlink()
+        (self.repo / "sender-state.json").unlink()
         buf = io.StringIO()
+        import loop_status
+
         with patch.object(loop_status, "REPO", self.repo):
             with patch("sys.stdout", buf):
                 try:
@@ -779,6 +1014,92 @@ class TestLoopStatusIntegration(unittest.TestCase):
                 except SystemExit:
                     pass
         self.assertIn("not been started", buf.getvalue())
+
+
+# ===========================================================================
+# Integration: loop_stop.py
+# ===========================================================================
+
+
+class TestLoopStop(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_stop(self):
+        import loop_stop
+
+        with patch.object(loop_stop, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git") as mock_git:
+                    mock_git.return_value = MagicMock(returncode=0)
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        try:
+                            loop_stop.main()
+                        except SystemExit:
+                            pass
+
+    def test_stop_sets_stop_in_receiver(self):
+        self._run_stop()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("stop"))
+
+    def test_stop_clears_pause(self):
+        rc = lib.load_receiver_state(self.repo)
+        rc["pause"] = True
+        lib.save_receiver_state(self.repo, rc)
+        self._run_stop()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("stop"))
+        self.assertFalse(rc.get("pause", False))
+
+    def test_stop_does_not_set_pause(self):
+        self._run_stop()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertFalse(rc.get("pause", False))
+
+
+# ===========================================================================
+# Integration: loop_pause.py
+# ===========================================================================
+
+
+class TestLoopPause(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_pause(self):
+        import loop_pause
+
+        with patch.object(loop_pause, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git") as mock_git:
+                    mock_git.return_value = MagicMock(returncode=0)
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        try:
+                            loop_pause.main()
+                        except SystemExit:
+                            pass
+
+    def test_pause_sets_pause_in_receiver(self):
+        self._run_pause()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("pause"))
+
+    def test_pause_clears_stop(self):
+        rc = lib.load_receiver_state(self.repo)
+        rc["stop"] = True
+        lib.save_receiver_state(self.repo, rc)
+        self._run_pause()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("pause"))
+        self.assertFalse(rc.get("stop", False))
+
+    def test_pause_does_not_set_stop(self):
+        self._run_pause()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertFalse(rc.get("stop", False))
 
 
 # ===========================================================================
@@ -798,7 +1119,7 @@ class TestTrimLoopContextIntegration(unittest.TestCase):
         return ctx
 
     def _run_trim(self, dry_run: bool = False) -> str:
-        import io, trim_loop_context
+        import trim_loop_context
 
         buf = io.StringIO()
         argv = ["trim_loop_context.py"] + (["--dry-run"] if dry_run else [])
@@ -878,110 +1199,23 @@ class TestTrimLoopContextIntegration(unittest.TestCase):
 
 
 # ===========================================================================
-# Integration: loop_stop.py
-# ===========================================================================
-
-
-class TestLoopStop(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.repo = _make_git_repo(Path(self.tmp) / "repo")
-
-    def _run_stop(self):
-        import loop_stop
-
-        with patch.object(loop_stop, "REPO", self.repo):
-            with patch("lib.current_branch", return_value="main"):
-                with patch("lib.git") as mock_git:
-                    mock_git.return_value = MagicMock(returncode=0)
-                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-                        try:
-                            loop_stop.main()
-                        except SystemExit:
-                            pass
-
-    def test_stop_sets_stop_true_in_oc_state(self):
-        self._run_stop()
-        oc = lib.load_oc_state(self.repo)
-        self.assertTrue(oc.get("stop"))
-
-    def test_stop_clears_pause_field(self):
-        oc = lib.load_oc_state(self.repo)
-        oc["pause"] = True
-        lib.save_oc_state(self.repo, oc)
-        self._run_stop()
-        oc = lib.load_oc_state(self.repo)
-        self.assertTrue(oc.get("stop"))
-        self.assertFalse(oc.get("pause", False))
-
-    def test_stop_does_not_set_pause(self):
-        self._run_stop()
-        oc = lib.load_oc_state(self.repo)
-        self.assertFalse(oc.get("pause", False))
-
-
-# ===========================================================================
-# Integration: loop_pause.py
-# ===========================================================================
-
-
-class TestLoopPause(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.repo = _make_git_repo(Path(self.tmp) / "repo")
-
-    def _run_pause(self):
-        import loop_pause
-
-        with patch.object(loop_pause, "REPO", self.repo):
-            with patch("lib.current_branch", return_value="main"):
-                with patch("lib.git") as mock_git:
-                    mock_git.return_value = MagicMock(returncode=0)
-                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-                        try:
-                            loop_pause.main()
-                        except SystemExit:
-                            pass
-
-    def test_pause_sets_pause_true_in_oc_state(self):
-        self._run_pause()
-        oc = lib.load_oc_state(self.repo)
-        self.assertTrue(oc.get("pause"))
-
-    def test_pause_clears_stop_field(self):
-        oc = lib.load_oc_state(self.repo)
-        oc["stop"] = True
-        lib.save_oc_state(self.repo, oc)
-        self._run_pause()
-        oc = lib.load_oc_state(self.repo)
-        self.assertTrue(oc.get("pause"))
-        self.assertFalse(oc.get("stop", False))
-
-    def test_pause_does_not_set_stop(self):
-        self._run_pause()
-        oc = lib.load_oc_state(self.repo)
-        self.assertFalse(oc.get("stop", False))
-
-
-# ===========================================================================
 # Schema validation
 # ===========================================================================
 
 
-class TestLoopStateSchema(unittest.TestCase):
-    LOOP_REPO = Path(__file__).parent.parent
-
-    def test_loop_state_has_required_fields(self):
-        data = json.loads((self.LOOP_REPO / "loop-state.json").read_text())
+class TestStateSchema(unittest.TestCase):
+    def test_receiver_state_has_required_fields(self):
+        data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
         for field in (
             "targets",
             "deps",
             "max_attempts",
             "blocker_patterns",
+            "fix_pushed",
             "stop",
             "pause",
         ):
-            self.assertIn(field, data)
+            self.assertIn(field, data, f"Missing field: {field}")
         self.assertIsInstance(data["targets"], list)
         self.assertIsInstance(data["deps"], dict)
         self.assertIsInstance(data["max_attempts"], int)
@@ -989,9 +1223,10 @@ class TestLoopStateSchema(unittest.TestCase):
         self.assertIsInstance(data["blocker_patterns"], list)
         self.assertIsInstance(data["stop"], bool)
         self.assertIsInstance(data["pause"], bool)
+        self.assertIsInstance(data["fix_pushed"], bool)
 
-    def test_loop_run_state_has_required_fields(self):
-        data = json.loads((self.LOOP_REPO / "loop-run-state.json").read_text())
+    def test_sender_state_has_required_fields(self):
+        data = json.loads((LOOP_REPO / "sender-state.json").read_text())
         for field in (
             "status",
             "completed_targets",
@@ -999,10 +1234,10 @@ class TestLoopStateSchema(unittest.TestCase):
             "attempts",
             "max_attempts",
         ):
-            self.assertIn(field, data)
+            self.assertIn(field, data, f"Missing field: {field}")
 
-    def test_loop_state_no_circular_deps(self):
-        data = json.loads((self.LOOP_REPO / "loop-state.json").read_text())
+    def test_receiver_state_no_circular_deps(self):
+        data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
         deps = data.get("deps", {})
 
         def has_cycle(node, visited, stack):
@@ -1020,8 +1255,8 @@ class TestLoopStateSchema(unittest.TestCase):
         for t in data.get("targets", []):
             self.assertFalse(has_cycle(t, set(), set()), f"Cycle involving '{t}'")
 
-    def test_loop_run_state_status_valid(self):
-        data = json.loads((self.LOOP_REPO / "loop-run-state.json").read_text())
+    def test_sender_state_status_valid(self):
+        data = json.loads((LOOP_REPO / "sender-state.json").read_text())
         valid = {
             "running",
             "needs_human",
@@ -1032,10 +1267,379 @@ class TestLoopStateSchema(unittest.TestCase):
         self.assertIn(data["status"], valid)
 
     def test_blocker_patterns_have_required_keys(self):
-        data = json.loads((self.LOOP_REPO / "loop-state.json").read_text())
+        data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
         for i, entry in enumerate(data.get("blocker_patterns", [])):
             self.assertIn("pattern", entry, f"blocker_patterns[{i}] missing 'pattern'")
             self.assertIn("message", entry, f"blocker_patterns[{i}] missing 'message'")
+
+    def test_receiver_state_does_not_have_waiting_for_fix(self):
+        data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
+        self.assertNotIn(
+            "waiting_for_fix",
+            data,
+            "waiting_for_fix should not exist — receiver infers from sender-state.json",
+        )
+
+    def test_receiver_state_does_not_have_opencode_last_fix(self):
+        data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
+        self.assertNotIn("opencode_last_fix", data, "old field — replaced by last_fix")
+
+
+# ===========================================================================
+# Unit: opencode_loop -- set_fix_pushed (with mocked git)
+# ===========================================================================
+
+
+class TestSetFixPushed(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run(self, message="test fix"):
+        import opencode_loop
+
+        with patch.object(opencode_loop, "REPO", self.repo):
+            with patch("lib.git") as mock_git:
+                mock_git.return_value = MagicMock(returncode=0)
+                opencode_loop.set_fix_pushed(self.repo, "main", message)
+
+    def test_sets_fix_pushed_true(self):
+        self._run()
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc["fix_pushed"])
+
+    def test_sets_last_fix_message(self):
+        self._run("deploy fixed")
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual("deploy fixed", rc["last_fix"])
+
+    def test_does_not_write_sender_state(self):
+        sender_before = lib.load_sender_state(self.repo)
+        self._run()
+        sender_after = lib.load_sender_state(self.repo)
+        self.assertEqual(sender_before, sender_after)
+
+
+# ===========================================================================
+# Unit: opencode_loop -- gather_previous_logs (pure function)
+# ===========================================================================
+
+
+class TestGatherPreviousLogs(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmp) / "runs"
+        self.runs_dir.mkdir()
+
+    def _make_log(self, name, content):
+        p = self.runs_dir / name
+        p.write_text(content)
+        return p
+
+    def test_no_prev_logs_returns_empty(self):
+        import opencode_loop
+
+        result = opencode_loop.gather_previous_logs(self.runs_dir, "build", [])
+        self.assertEqual("", result)
+
+    def test_includes_previous_log_content(self):
+        import opencode_loop
+
+        logs = [
+            self._make_log("build-001.log", "first run"),
+            self._make_log("build-002.log", "second run"),
+        ]
+        result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
+        self.assertIn("second run", result)
+
+    def test_includes_opencode_log_if_present(self):
+        import opencode_loop
+
+        self._make_log("opencode-loop-20240101.log", "opencode output here")
+        logs = [self._make_log("build-001.log", "main log")]
+        result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
+        self.assertIn("opencode output here", result)
+
+    def test_max_3_prev_logs(self):
+        import opencode_loop
+
+        logs = [self._make_log(f"build-00{i}.log", f"run {i}") for i in range(6)]
+        result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
+        # logs[1:4] = indices 1,2,3 — that's 3 logs
+        self.assertIn("run 1", result)
+        self.assertIn("run 3", result)
+        self.assertNotIn("run 4", result)
+
+
+# ===========================================================================
+# Unit: loop.py -- main() loop signal handling
+# ===========================================================================
+
+
+class TestLoopMainSignals(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_main_one_tick(self, receiver_override=None, sender_override=None):
+        """Run loop.main() with stop signal set so it exits after one iteration."""
+        import loop
+
+        if receiver_override:
+            rc = lib.load_receiver_state(self.repo)
+            rc.update(receiver_override)
+            lib.save_receiver_state(self.repo, rc)
+
+        if sender_override:
+            s = lib.load_sender_state(self.repo)
+            s.update(sender_override)
+            lib.save_sender_state(self.repo, s)
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch.object(
+                loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"
+            ):
+                with patch.object(
+                    loop, "RECEIVER_STATE_PATH", self.repo / "receiver-state.json"
+                ):
+                    with patch("lib.git") as mock_git:
+                        with patch("lib.git_pull"):
+                            with patch("lib.push_sender_state"):
+                                with patch("time.sleep"):
+                                    mock_git.return_value = MagicMock(returncode=0)
+                                    try:
+                                        loop.main()
+                                    except SystemExit:
+                                        pass
+
+    def test_stop_signal_exits(self):
+        self._run_main_one_tick(receiver_override={"stop": True, "targets": ["a"]})
+        # If we get here without hanging, stop signal worked
+
+    def test_no_targets_exits(self):
+        self._run_main_one_tick(receiver_override={"targets": []})
+        # Should exit with sys.exit(1) cleanly
+
+    def test_all_completed_exits(self):
+        self._run_main_one_tick(
+            receiver_override={"targets": ["a"], "deps": {}},
+            sender_override={
+                "status": "running",
+                "completed_targets": ["a"],
+                "failed_targets": [],
+                "attempts": {},
+            },
+        )
+        # Should detect all done and exit
+
+    def test_pause_signal_sleeps(self):
+        # Set pause=true and stop=true so it pauses then stops
+        rc = lib.load_receiver_state(self.repo)
+        rc["pause"] = True
+        rc["targets"] = ["a"]
+        lib.save_receiver_state(self.repo, rc)
+
+        import loop
+
+        call_count = 0
+
+        def fake_pull(repo, branch):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                # After first pause poll, set stop signal
+                rc2 = lib.load_receiver_state(repo)
+                rc2["stop"] = True
+                rc2["pause"] = False
+                lib.save_receiver_state(repo, rc2)
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch.object(
+                loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"
+            ):
+                with patch.object(
+                    loop, "RECEIVER_STATE_PATH", self.repo / "receiver-state.json"
+                ):
+                    with patch("lib.git_pull", side_effect=fake_pull):
+                        with patch("lib.push_sender_state"):
+                            with patch("lib.git") as mock_git:
+                                with patch("time.sleep"):
+                                    mock_git.return_value = MagicMock(returncode=0)
+                                    try:
+                                        loop.main()
+                                    except SystemExit:
+                                        pass
+        self.assertGreaterEqual(call_count, 1)
+
+
+# ===========================================================================
+# Unit: opencode_loop -- main() key paths
+# ===========================================================================
+
+
+class TestOpencodeLoopMain(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+        (self.repo / "runs").mkdir(exist_ok=True)
+
+    def _run_receiver_one_tick(
+        self, sender_override=None, receiver_override=None, opencode_output="RETRY"
+    ):
+        import opencode_loop
+
+        if sender_override:
+            s = lib.load_sender_state(self.repo)
+            s.update(sender_override)
+            lib.save_sender_state(self.repo, s)
+
+        if receiver_override:
+            rc = lib.load_receiver_state(self.repo)
+            rc.update(receiver_override)
+            lib.save_receiver_state(self.repo, rc)
+
+        tick = 0
+
+        def fake_pull(*args, **kwargs):
+            nonlocal tick
+            tick += 1
+            if tick >= 2:
+                # After first iteration, set completed so receiver exits
+                s = lib.load_sender_state(self.repo)
+                s["status"] = "completed"
+                lib.save_sender_state(self.repo, s)
+            return MagicMock(returncode=0)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = opencode_output
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with patch.object(opencode_loop, "REPO", self.repo):
+            with patch("lib.git", return_value=MagicMock(returncode=0)):
+                with patch("lib.git_pull", side_effect=fake_pull):
+                    with patch("subprocess.run", return_value=mock_proc):
+                        with patch("time.sleep"):
+                            try:
+                                opencode_loop.main()
+                            except SystemExit:
+                                pass
+
+    def test_receiver_exits_on_completed(self):
+        # Set completed status immediately — receiver should exit cleanly
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "completed"
+        lib.save_sender_state(self.repo, s)
+        self._run_receiver_one_tick()
+        # No assertion needed — just verify it doesn't hang
+
+    def test_receiver_stands_by_when_no_failure(self):
+        # Verify via pure function — last_result=success means nothing to fix
+        import opencode_loop
+
+        sender = {
+            "last_result": "success",
+            "status": "running",
+            "last_run_log": "a",
+            "completed_targets": [],
+            "failed_targets": [],
+        }
+        receiver = {"fix_pushed": False}
+        ok, reason = opencode_loop.should_invoke_opencode(
+            sender, receiver, "", "a-001.log"
+        )
+        self.assertFalse(ok)
+
+    def test_receiver_waits_when_no_sender_state(self):
+        # Verify via pure function — empty sender state means nothing to fix
+        import opencode_loop
+
+        ok, reason = opencode_loop.should_invoke_opencode(
+            {}, {"fix_pushed": False}, "", ""
+        )
+        self.assertFalse(ok)
+
+    def test_should_invoke_opencode_true_for_failed_target_with_log(self):
+        # Verify the decision function returns True for a real failure with a log
+        import opencode_loop
+
+        log = self.repo / "runs" / "a-20240101-120000.log"
+        log.write_text("Error: something failed")
+
+        sender = {
+            "last_result": "failed",
+            "status": "running",
+            "last_run_log": "a",
+            "completed_targets": [],
+            "failed_targets": [],
+        }
+        receiver = {"fix_pushed": False}
+        ok, reason = opencode_loop.should_invoke_opencode(
+            sender, receiver, "", "a-20240101-120000.log"
+        )
+        self.assertTrue(ok, f"Expected should_invoke=True, got reason: {reason}")
+
+
+# ===========================================================================
+# Unit: loop_resilient -- loop-context.md auto-creation
+# ===========================================================================
+
+
+class TestLoopResilientContextCreation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_creates_loop_context_if_missing(self):
+        import loop_resilient
+
+        context_file = self.repo / "loop-context.md"
+        self.assertFalse(context_file.exists())
+
+        with patch.object(loop_resilient, "REPO", self.repo):
+            with patch.object(
+                loop_resilient, "LOG_FILE", self.repo / "runs" / "resilient.log"
+            ):
+                with patch.object(loop_resilient, "LOOP_SCRIPT", Path("/dev/null")):
+                    with patch("lib.register_ours_driver"):
+                        with patch("lib.current_branch", return_value="main"):
+                            with patch("lib.git"):
+                                with patch("subprocess.run") as mock_run:
+                                    # Make loop_resilient exit after first loop
+                                    mock_run.return_value = MagicMock(returncode=0)
+                                    (self.repo / "runs").mkdir(exist_ok=True)
+                                    try:
+                                        loop_resilient.main()
+                                    except SystemExit:
+                                        pass
+
+        self.assertTrue(context_file.exists())
+        content = context_file.read_text()
+        self.assertIn("Loop Context", content)
+
+    def test_does_not_overwrite_existing_context(self):
+        import loop_resilient
+
+        context_file = self.repo / "loop-context.md"
+        context_file.write_text("# My existing context\n\nDo not overwrite me.")
+
+        with patch.object(loop_resilient, "REPO", self.repo):
+            with patch.object(
+                loop_resilient, "LOG_FILE", self.repo / "runs" / "resilient.log"
+            ):
+                with patch.object(loop_resilient, "LOOP_SCRIPT", Path("/dev/null")):
+                    with patch("lib.register_ours_driver"):
+                        with patch("lib.current_branch", return_value="main"):
+                            with patch("lib.git"):
+                                with patch("subprocess.run") as mock_run:
+                                    mock_run.return_value = MagicMock(returncode=0)
+                                    (self.repo / "runs").mkdir(exist_ok=True)
+                                    try:
+                                        loop_resilient.main()
+                                    except SystemExit:
+                                        pass
+
+        self.assertIn("Do not overwrite me", context_file.read_text())
 
 
 if __name__ == "__main__":

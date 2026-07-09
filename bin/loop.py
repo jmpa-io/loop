@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-bin/loop.py — dependency-aware deployment loop.
+bin/loop.py — dependency-aware deployment loop (sender side).
 
-Reads targets and their dependency graph from loop-state.json.
+Reads targets and their dependency graph from receiver-state.json.
 A target runs only when ALL its dependencies have succeeded.
 If a dependency permanently failed (max retries), the target is SKIPPED
 so independent targets can still run.
 
-State files:
-    loop-run-state.json — written by this script (runner machine)
-    loop-state.json     — written by OpenCode (Mac)
+File ownership:
+    sender-state.json   — this script writes it (sender)
+    receiver-state.json — this script reads it only (receiver owns it)
 """
 
 import subprocess
@@ -21,40 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import lib
 
 REPO = lib.repo_root()
-RUN_STATE_PATH = REPO / "loop-run-state.json"
-OC_STATE_PATH = REPO / "loop-state.json"
-FIX_POLL = 10  # seconds between polls when waiting
-
-
-# ---------------------------------------------------------------------------
-# Human wait
-# ---------------------------------------------------------------------------
-
-
-def wait_for_human(branch: str, message: str) -> None:
-    """Block until fix_pushed=true is set in loop-state.json."""
-    lib.log_fail(f"Needs human: {message}")
-    run = lib.load_run_state(REPO)
-    run["status"] = "needs_human"
-    run["human_action"] = message
-    lib.save_run_state(REPO, run)
-    lib.push_run_state(REPO, branch, f"blocked — needs human: {message}")
-
-    while True:
-        time.sleep(FIX_POLL)
-        lib.git_pull(REPO, branch)
-        oc = lib.load_oc_state(REPO)
-        if oc.get("fix_pushed"):
-            lib.log_ok("Human action acknowledged — resuming")
-            run = lib.load_run_state(REPO)
-            run["status"] = "running"
-            run["human_action"] = None
-            lib.save_run_state(REPO, run)
-            oc["fix_pushed"] = False
-            lib.save_oc_state(REPO, oc)
-            lib.push_run_state(REPO, branch, "resuming after human ack")
-            return
-        lib.log_wait("Waiting for human action and fix_pushed=true...")
+SENDER_STATE_PATH = REPO / "sender-state.json"
+RECEIVER_STATE_PATH = REPO / "receiver-state.json"
+FIX_POLL = 10  # seconds between polls when waiting for fix or human
 
 
 # ---------------------------------------------------------------------------
@@ -67,30 +36,25 @@ def run_target(target: str, branch: str) -> bool:
     Run `make <target>` once. Returns True on success, False on failure.
     Handles retry signalling, blocker detection, and state updates.
     """
-    run = lib.load_run_state(REPO)
-    oc = lib.load_oc_state(REPO)
+    sender = lib.load_sender_state(REPO)
+    receiver = lib.load_receiver_state(REPO)
 
     # Idempotency guard — never re-run a completed target
-    if lib.is_already_completed(target, run):
+    if lib.is_already_completed(target, sender):
         lib.log_ok(f"{target} — already completed, skipping")
         return True
 
-    max_att = run.get("max_attempts", oc.get("max_attempts", 10))
-    attempt = run.get("attempts", {}).get(target, 1)
+    max_att = sender.get("max_attempts", receiver.get("max_attempts", 10))
+    attempt = sender.get("attempts", {}).get(target, 1)
     lib.log(f"▶ {target} (attempt {attempt}/{max_att})")
-
-    # Clear stale fix_pushed before running
-    if oc.get("fix_pushed"):
-        oc["fix_pushed"] = False
-        lib.save_oc_state(REPO, oc)
 
     result = subprocess.run(["make", target], cwd=str(REPO))
 
     if result.returncode == 0:
         lib.log_ok(f"{target} succeeded")
-        run = lib.apply_target_success(lib.load_run_state(REPO), target)
-        lib.save_run_state(REPO, run)
-        lib.push_run_state(REPO, branch, f"{target} succeeded")
+        sender = lib.apply_target_success(lib.load_sender_state(REPO), target)
+        lib.save_sender_state(REPO, sender)
+        lib.push_sender_state(REPO, branch, f"{target} succeeded")
         return True
 
     # ── Failure path ────────────────────────────────────────────────────────
@@ -100,66 +64,50 @@ def run_target(target: str, branch: str) -> bool:
     logs = sorted(
         runs_dir.glob(f"{target}-*.log"), key=lambda p: p.stat().st_mtime, reverse=True
     )
-    blocker_patterns = oc.get("blocker_patterns", [])
+    blocker_patterns = receiver.get("blocker_patterns", [])
     if logs and blocker_patterns:
         log_content = logs[0].read_text(errors="replace")
         blocker_msg = lib.check_hardware_blocker(log_content, blocker_patterns)
         if blocker_msg:
             lib.log_fail(f"Blocker detected in {logs[0].name}: {blocker_msg}")
-            run = lib.load_run_state(REPO)
-            run["status"] = "needs_human"
-            run["human_action"] = (
+            sender = lib.load_sender_state(REPO)
+            sender["status"] = "needs_human"
+            sender["human_action"] = (
                 f"{blocker_msg} — fix manually then run: make loop-reset"
             )
-            lib.save_run_state(REPO, run)
-            lib.push_run_state(REPO, branch, f"{target} — blocker — needs human")
+            lib.save_sender_state(REPO, sender)
+            lib.push_sender_state(REPO, branch, f"{target} — blocker — needs human")
             return False
 
-    run, permanently_failed = lib.apply_target_failure(
-        lib.load_run_state(REPO), target, max_att
+    sender, permanently_failed = lib.apply_target_failure(
+        lib.load_sender_state(REPO), target, max_att
     )
-    lib.save_run_state(REPO, run)
+    lib.save_sender_state(REPO, sender)
 
     if permanently_failed:
         lib.log_fail(f"{target} hit max retries — marking permanently failed")
-        lib.push_run_state(
+        lib.push_sender_state(
             REPO, branch, f"{target} permanently failed after {max_att} retries"
         )
         return False
 
     lib.log_fail(f"{target} failed (attempt {attempt}/{max_att})")
-    lib.push_run_state(REPO, branch, f"{target} failed — attempt {attempt}")
+    lib.push_sender_state(REPO, branch, f"{target} failed — attempt {attempt}")
 
-    # Signal OpenCode then wait before retrying
-    oc = lib.load_oc_state(REPO)
-    oc["fix_pushed"] = False
-    oc["waiting_for_fix"] = True
-    lib.save_oc_state(REPO, oc)
-    lib.git(REPO, "add", "loop-state.json")
-    r = lib.git(REPO, "diff", "--staged", "--quiet")
-    if r.returncode != 0:
-        lib.git(
-            REPO,
-            "commit",
-            "-m",
-            f"loop: waiting_for_fix=true — {target} attempt {attempt}",
-        )
-        lib.git(REPO, "push", "origin", branch)
+    # Wait for receiver to push a fix, polling git
+    lib.log_wait(f"Waiting for receiver to push a fix for {target}...")
+    for _ in range(18):  # poll for up to 3 minutes (18 x 10s)
+        time.sleep(FIX_POLL)
+        lib.git_pull(REPO, branch)
+        receiver = lib.load_receiver_state(REPO)
+        if receiver.get("fix_pushed"):
+            lib.log_ok(f"Receiver pushed a fix for {target} — retrying")
+            return False
+        if lib.should_stop(receiver):
+            lib.log("Stop signal received while waiting for fix — exiting")
+            sys.exit(0)
 
-    lib.push_run_state(
-        REPO, branch, f"{target} failed — attempt {attempt} — waiting for OpenCode"
-    )
-
-    lib.log_wait("Waiting 60s before retry (OpenCode may be pushing a fix)...")
-    time.sleep(60)
-    lib.git_pull(REPO, branch)
-
-    oc = lib.load_oc_state(REPO)
-    oc["waiting_for_fix"] = False
-    oc["fix_pushed"] = False
-    lib.save_oc_state(REPO, oc)
-
-    lib.log_ok(f"Retrying {target}")
+    lib.log_wait(f"No fix received after 3 minutes — retrying {target} anyway")
     return False
 
 
@@ -169,11 +117,11 @@ def run_target(target: str, branch: str) -> bool:
 
 
 def initialise(branch: str) -> None:
-    oc = lib.load_oc_state(REPO)
-    existing = lib.load_run_state(REPO) if RUN_STATE_PATH.exists() else None
-    run = lib.initialise_run_state(existing, oc)
-    lib.save_run_state(REPO, run)
-    lib.push_run_state(REPO, branch, "initialised loop")
+    receiver = lib.load_receiver_state(REPO)
+    existing = lib.load_sender_state(REPO) if SENDER_STATE_PATH.exists() else None
+    sender = lib.initialise_sender_state(existing, receiver)
+    lib.save_sender_state(REPO, sender)
+    lib.push_sender_state(REPO, branch, "initialised loop")
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +133,12 @@ def main() -> None:
     lib.register_ours_driver(REPO)
     branch = lib.current_branch(REPO)
 
-    lib.log(f"Starting loop — branch: {branch}")
+    lib.log(f"Starting sender loop — branch: {branch}")
     lib.git(REPO, "submodule", "update", "--init", "--recursive", "--quiet")
 
-    oc = lib.load_oc_state(REPO)
-    if not oc.get("targets"):
-        lib.log_fail("loop-state.json has no targets — nothing to do")
+    receiver = lib.load_receiver_state(REPO)
+    if not receiver.get("targets"):
+        lib.log_fail("receiver-state.json has no targets — nothing to do")
         sys.exit(1)
 
     initialise(branch)
@@ -198,40 +146,38 @@ def main() -> None:
 
     while True:
         lib.git_pull(REPO, branch)
-        run = lib.load_run_state(REPO)
-        oc = lib.load_oc_state(REPO)
+        sender = lib.load_sender_state(REPO)
+        receiver = lib.load_receiver_state(REPO)
 
         # ── Stop / pause signals ────────────────────────────────────────────
-        if lib.should_stop(oc):
+        if lib.should_stop(receiver):
             lib.log("Stop signal received — exiting")
-            oc = lib.clear_signals(oc)
-            lib.save_oc_state(REPO, oc)
             sys.exit(0)
 
-        if lib.should_pause(oc):
+        if lib.should_pause(receiver):
             lib.log_wait("Pause signal received — waiting for resume...")
             time.sleep(FIX_POLL)
             continue
 
         # ── Needs-human pause ───────────────────────────────────────────────
-        if run.get("status") == "needs_human":
-            lib.log_wait(f"Loop paused — waiting for human: {run.get('human_action')}")
+        if sender.get("status") == "needs_human":
+            lib.log_wait(
+                f"Loop paused — waiting for human: {sender.get('human_action')}"
+            )
             time.sleep(FIX_POLL)
             lib.git_pull(REPO, branch)
-            oc = lib.load_oc_state(REPO)
-            if oc.get("fix_pushed"):
-                run = lib.load_run_state(REPO)
-                run["status"] = "running"
-                run["human_action"] = None
-                lib.save_run_state(REPO, run)
-                oc["fix_pushed"] = False
-                lib.save_oc_state(REPO, oc)
-                lib.push_run_state(REPO, branch, "resuming after human ack")
+            receiver = lib.load_receiver_state(REPO)
+            if receiver.get("fix_pushed"):
+                sender = lib.load_sender_state(REPO)
+                sender["status"] = "running"
+                sender["human_action"] = None
+                lib.save_sender_state(REPO, sender)
+                lib.push_sender_state(REPO, branch, "resuming after human ack")
                 lib.log_ok("Resumed — human action acknowledged")
             continue
 
         # ── Build snapshot ───────────────────────────────────────────────────
-        snapshot = lib.build_snapshot(run, oc)
+        snapshot = lib.build_snapshot(sender, receiver)
         ready = snapshot["ready"]
         waiting = snapshot["waiting"]
         skipped = snapshot["skipped"]
@@ -242,19 +188,19 @@ def main() -> None:
             lib.log_wait(f"{t} — {reason}")
 
         # ── All done? ────────────────────────────────────────────────────────
-        if lib.all_targets_done(run, oc):
-            failed_list = run.get("failed_targets", [])
-            run["status"] = (
+        if lib.all_targets_done(sender, receiver):
+            failed_list = sender.get("failed_targets", [])
+            sender["status"] = (
                 "completed" if not failed_list else "completed_with_failures"
             )
-            lib.save_run_state(REPO, run)
+            lib.save_sender_state(REPO, sender)
             if not failed_list:
                 lib.log_ok("All targets completed successfully!")
             else:
                 lib.log_ok("Loop complete with some failures/skips.")
                 lib.log(f"Failed: {failed_list}")
                 lib.log(f"Skipped: {[t for t, _ in skipped]}")
-            lib.push_run_state(REPO, branch, "loop complete")
+            lib.push_sender_state(REPO, branch, "loop complete")
             sys.exit(0)
 
         if not ready:
@@ -265,8 +211,8 @@ def main() -> None:
         # ── Run ready targets ────────────────────────────────────────────────
         for target in ready:
             run_target(target, branch)
-            run = lib.load_run_state(REPO)
-            if run.get("status") == "needs_human":
+            sender = lib.load_sender_state(REPO)
+            if sender.get("status") == "needs_human":
                 lib.log_wait("Loop entered needs_human — stopping ready-target run")
                 break
 

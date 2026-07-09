@@ -13,12 +13,12 @@ REPO = lib.repo_root()
 
 
 def main() -> None:
-    path = REPO / "loop-run-state.json"
+    path = REPO / "sender-state.json"
     if not path.exists():
-        print("loop-run-state.json not found — loop has not been started yet.")
+        print("sender-state.json not found — loop has not been started yet.")
         sys.exit(0)
 
-    r = lib.load_run_state(REPO)
+    r = lib.load_sender_state(REPO)
     print(f"Status:    {r.get('status')}")
     print(f"Last run:  {r.get('last_run_log')} ({r.get('last_result')})")
     print(f"Completed: {r.get('completed_targets')}")
