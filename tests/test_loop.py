@@ -735,7 +735,7 @@ class TestRunTarget(unittest.TestCase):
             REPO=self.repo,
         )
 
-    def _run_target(self, target, branch, make_returncode=0):
+    def _run_target(self, target, branch, make_returncode=0, stdout="", stderr=""):
         import sender as loop
 
         with patch.object(loop, "REPO", self.repo):
@@ -745,7 +745,9 @@ class TestRunTarget(unittest.TestCase):
                         with patch("lib.git_pull"):
                             with patch("time.sleep"):
                                 mock_run.return_value = MagicMock(
-                                    returncode=make_returncode
+                                    returncode=make_returncode,
+                                    stdout=stdout,
+                                    stderr=stderr,
                                 )
                                 mock_git.return_value = MagicMock(returncode=0)
                                 return loop.run_target(target, branch)
@@ -792,16 +794,16 @@ class TestRunTarget(unittest.TestCase):
         self.assertIn("a", sender["failed_targets"])
 
     def test_blocker_pattern_sets_needs_human(self):
-        # Set a blocker pattern and create a matching log
+        # Blocker pattern matches stderr written into the log by sender
         receiver = lib.load_receiver_state(self.repo)
         receiver["blocker_patterns"] = [
             {"pattern": "NAS.*unreachable", "message": "NAS is down"}
         ]
         lib.save_receiver_state(self.repo, receiver)
-        log = self.repo / "runs" / "a-20240101.log"
-        log.write_text("NAS unreachable: connection refused")
 
-        self._run_target("a", "main", make_returncode=1)
+        self._run_target(
+            "a", "main", make_returncode=1, stderr="NAS unreachable: connection refused"
+        )
         sender = lib.load_sender_state(self.repo)
         self.assertEqual("needs_human", sender.get("status"))
 
@@ -1328,11 +1330,19 @@ class TestSetFixPushed(unittest.TestCase):
 class TestGatherPreviousLogs(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.runs_dir = Path(self.tmp) / "runs"
-        self.runs_dir.mkdir()
+        # runs_dir is runs/logs/ — where target logs live
+        self.runs_dir = Path(self.tmp) / "runs" / "logs"
+        self.runs_dir.mkdir(parents=True)
 
     def _make_log(self, name, content):
+        """Create a target log in runs/logs/."""
         p = self.runs_dir / name
+        p.write_text(content)
+        return p
+
+    def _make_oc_log(self, name, content):
+        """Create an opencode log in runs/ (parent of runs/logs/)."""
+        p = self.runs_dir.parent / name
         p.write_text(content)
         return p
 
@@ -1355,7 +1365,7 @@ class TestGatherPreviousLogs(unittest.TestCase):
     def test_includes_opencode_log_if_present(self):
         import receiver as opencode_loop
 
-        self._make_log("opencode-loop-20240101.log", "opencode output here")
+        self._make_oc_log("opencode-loop-20240101.log", "opencode output here")
         logs = [self._make_log("build-001.log", "main log")]
         result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
         self.assertIn("opencode output here", result)
@@ -1563,7 +1573,8 @@ class TestOpencodeLoopMain(unittest.TestCase):
         # Verify the decision function returns True for a real failure with a log
         import receiver as opencode_loop
 
-        log = self.repo / "runs" / "a-20240101-120000.log"
+        log = self.repo / "runs" / "logs" / "a-20240101-120000.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("Error: something failed")
 
         sender = {
@@ -1640,8 +1651,6 @@ class TestLoopResilientContextCreation(unittest.TestCase):
                                         pass
 
         self.assertIn("Do not overwrite me", context_file.read_text())
-
-
 
 
 # ===========================================================================
@@ -1826,11 +1835,14 @@ class TestRunTargetFixPolling(unittest.TestCase):
 
     def _run_failed_target(self, on_pull=None):
         import sender as loop
+
         with patch.object(loop, "REPO", self.repo):
             with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                 with patch("lib.git", return_value=MagicMock(returncode=0)):
                     with patch("lib.push_sender_state"):
-                        with patch("lib.git_pull", side_effect=on_pull or (lambda r, b: None)):
+                        with patch(
+                            "lib.git_pull", side_effect=on_pull or (lambda r, b: None)
+                        ):
                             with patch("time.sleep"):
                                 return loop.run_target("a", "main")
 
@@ -1882,9 +1894,14 @@ class TestSenderMainNeedsHuman(unittest.TestCase):
 
     def _run_main(self, on_pull):
         import sender as loop
+
         with patch.object(loop, "REPO", self.repo):
-            with patch.object(loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"):
-                with patch.object(loop, "RECEIVER_STATE_PATH", self.repo / "receiver-state.json"):
+            with patch.object(
+                loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"
+            ):
+                with patch.object(
+                    loop, "RECEIVER_STATE_PATH", self.repo / "receiver-state.json"
+                ):
                     with patch("lib.git", return_value=MagicMock(returncode=0)):
                         with patch("lib.git_pull", side_effect=on_pull):
                             with patch("lib.push_sender_state"):
@@ -1941,6 +1958,7 @@ class TestSenderMainNeedsHuman(unittest.TestCase):
 class TestNotifyHuman(unittest.TestCase):
     def test_prints_action_required_banner(self):
         import receiver as opencode_loop
+
         sender = {"human_action": "Reboot the server"}
         with patch("subprocess.run"):
             with patch("builtins.print") as mock_print:
@@ -1951,6 +1969,7 @@ class TestNotifyHuman(unittest.TestCase):
 
     def test_falls_back_to_log_when_no_human_action(self):
         import receiver as opencode_loop
+
         with patch("subprocess.run"):
             with patch("builtins.print") as mock_print:
                 opencode_loop.notify_human({}, "deploy", "deploy-001.log")
@@ -1959,10 +1978,13 @@ class TestNotifyHuman(unittest.TestCase):
 
     def test_calls_osascript(self):
         import receiver as opencode_loop
+
         calls = []
         with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd)):
             with patch("builtins.print"):
-                opencode_loop.notify_human({"human_action": "Fix it"}, "deploy", "x.log")
+                opencode_loop.notify_human(
+                    {"human_action": "Fix it"}, "deploy", "x.log"
+                )
         self.assertTrue(any(isinstance(c, list) and "osascript" in c for c in calls))
 
 
@@ -1978,6 +2000,7 @@ class TestSetFixPushedRetry(unittest.TestCase):
 
     def test_retries_push_on_failure(self):
         import receiver as opencode_loop
+
         push_count = [0]
 
         def fake_git(repo, *args, **kwargs):
@@ -2005,11 +2028,14 @@ class TestLoopAckPushPath(unittest.TestCase):
 
     def _run_ack_with_git(self, git_fn):
         import loop_ack
+
         printed = []
         with patch.object(loop_ack, "REPO", self.repo):
             with patch("lib.current_branch", return_value="main"):
                 with patch("lib.git", side_effect=git_fn):
-                    with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                    with patch(
+                        "builtins.print", side_effect=lambda m: printed.append(m)
+                    ):
                         with patch("time.sleep"):
                             try:
                                 loop_ack.main()
@@ -2050,12 +2076,15 @@ class TestLoopStopPushPath(unittest.TestCase):
 
     def _run_stop_with_git(self, git_fn):
         import loop_stop
+
         printed = []
         with patch.object(loop_stop, "REPO", self.repo):
             with patch("lib.current_branch", return_value="main"):
                 with patch("lib.git", side_effect=git_fn):
                     with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-                        with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                        with patch(
+                            "builtins.print", side_effect=lambda m: printed.append(m)
+                        ):
                             with patch("time.sleep"):
                                 try:
                                     loop_stop.main()
@@ -2096,12 +2125,15 @@ class TestLoopPausePushPath(unittest.TestCase):
 
     def _run_pause_with_git(self, git_fn):
         import loop_pause
+
         printed = []
         with patch.object(loop_pause, "REPO", self.repo):
             with patch("lib.current_branch", return_value="main"):
                 with patch("lib.git", side_effect=git_fn):
                     with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-                        with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                        with patch(
+                            "builtins.print", side_effect=lambda m: printed.append(m)
+                        ):
                             with patch("time.sleep"):
                                 try:
                                     loop_pause.main()
@@ -2118,7 +2150,9 @@ class TestLoopPausePushPath(unittest.TestCase):
             return MagicMock(returncode=0)
 
         printed = self._run_pause_with_git(fake_git)
-        self.assertTrue(any("pushed" in m.lower() or "resume" in m.lower() for m in printed))
+        self.assertTrue(
+            any("pushed" in m.lower() or "resume" in m.lower() for m in printed)
+        )
 
     def test_fails_after_5_retries(self):
         def fake_git(repo, *args, **kwargs):
@@ -2142,6 +2176,7 @@ class TestLoopResetPushPath(unittest.TestCase):
 
     def test_pushes_when_state_changed(self):
         import loop_reset
+
         printed = []
         push_count = [0]
 
@@ -2156,7 +2191,9 @@ class TestLoopResetPushPath(unittest.TestCase):
         with patch.object(loop_reset, "REPO", self.repo):
             with patch("lib.current_branch", return_value="main"):
                 with patch("lib.git", side_effect=fake_git):
-                    with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                    with patch(
+                        "builtins.print", side_effect=lambda m: printed.append(m)
+                    ):
                         try:
                             loop_reset.main()
                         except SystemExit:
@@ -2166,6 +2203,7 @@ class TestLoopResetPushPath(unittest.TestCase):
 
     def test_retries_on_push_failure(self):
         import loop_reset
+
         push_count = [0]
 
         def fake_git(repo, *args, **kwargs):

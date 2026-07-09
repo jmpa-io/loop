@@ -102,7 +102,7 @@ def build_opencode_prompt(
 
 ## Files to read first (in this order)
 1. loop-context.md — FULL FILE. Read BEFORE writing any fix. Same fix twice = wrong approach.
-2. runs/{latest_log} — FULL FILE. Look for the FIRST error line, not the last symptom.
+2. runs/logs/{latest_log} — FULL FILE. Look for the FIRST error line, not the last symptom.
 3. sender-state.json — note attempt count and completed/failed targets for context.
 
 ## Previous attempts on this target
@@ -164,7 +164,7 @@ def set_fix_pushed(repo: Path, branch: str, message: str) -> None:
 
 def notify_human(sender_state: dict, target: str, latest_log: str) -> None:
     """Show a macOS notification and print a banner for human action required."""
-    human_action = sender_state.get("human_action", f"Check runs/{latest_log}")
+    human_action = sender_state.get("human_action", f"Check runs/logs/{latest_log}")
     print()
     print("════════════════════════════════════════════════════════════")
     print("  ⚠️  ACTION REQUIRED")
@@ -184,14 +184,20 @@ def notify_human(sender_state: dict, target: str, latest_log: str) -> None:
 
 
 def gather_previous_logs(runs_dir: Path, target: str, logs: list) -> str:
-    """Gather content from previous run logs and last OpenCode log for context."""
+    """Gather content from previous run logs and last OpenCode log for context.
+
+    runs_dir is expected to be runs/logs/ (target logs).
+    OpenCode invocation logs live one level up in runs/.
+    """
     prev = ""
     for pf in list(logs[1:4]):
         prev += f"\n--- Previous run log for {target}: {pf.name} ---\n"
         prev += pf.read_text(errors="replace")[-3000:]
 
+    # OpenCode logs live in runs/ (parent of runs/logs/)
+    oc_log_dir = runs_dir.parent
     oc_logs = sorted(
-        runs_dir.glob("opencode-loop-*.log"),
+        oc_log_dir.glob("opencode-loop-*.log"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -216,7 +222,7 @@ def main() -> None:
     errors = 0
     last_processed_log = ""
     sender_state_path = REPO / "sender-state.json"
-    runs_dir = REPO / "runs"
+    runs_dir = REPO / "runs" / "logs"
 
     while True:
         lib.git(
@@ -279,7 +285,9 @@ def main() -> None:
 
         lib.log(f"⚡ {target} failed — invoking OpenCode to fix (log: {latest_log})")
         last_processed_log = latest_log
-        oc_log = runs_dir / f"opencode-loop-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        oc_logs_dir = REPO / "runs"
+        oc_logs_dir.mkdir(exist_ok=True)
+        oc_log = oc_logs_dir / f"opencode-loop-{time.strftime('%Y%m%d-%H%M%S')}.log"
 
         prev_logs_content = gather_previous_logs(runs_dir, target, logs)
         log_content = logs[0].read_text(errors="replace") if logs else ""
@@ -296,7 +304,6 @@ def main() -> None:
         )
         output = result.stdout + result.stderr
         print(output, flush=True)
-        runs_dir.mkdir(exist_ok=True)
         oc_log.write_text(output)
 
         # Trim context if needed
@@ -328,7 +335,7 @@ def main() -> None:
         lib.log(f"OpenCode result: '{last_word or 'UNCLEAR'}'")
 
         if last_word in ("SUCCESS", "RETRY"):
-            set_fix_pushed(branch, f"{target} fixed by OpenCode")
+            set_fix_pushed(REPO, branch, f"{target} fixed by OpenCode")
             errors = 0
             lib.log_ok(f"{target} — fix pushed, sender will retry")
         elif last_word == "NEEDS_HUMAN":
@@ -336,7 +343,7 @@ def main() -> None:
             sender = lib.load_sender_state(REPO)
             sender["human_action"] = (
                 f"OpenCode could not fix {target} automatically. "
-                f"Check runs/{latest_log}. Fix manually then run: make loop-reset"
+                f"Check runs/logs/{latest_log}. Fix manually then run: make loop-reset"
             )
             sender["status"] = "needs_human"
             # NOTE: we write sender-state.json here only to surface the human_action
@@ -367,7 +374,7 @@ def main() -> None:
                     "Too many unclear responses — forcing fix_pushed=true to unblock sender"
                 )
                 set_fix_pushed(
-                    branch, f"forced unblock after {MAX_ERRORS} unclear responses"
+                    REPO, branch, f"forced unblock after {MAX_ERRORS} unclear responses"
                 )
                 errors = 0
 

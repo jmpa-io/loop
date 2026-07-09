@@ -329,7 +329,7 @@ class TestSenderStopSignal(unittest.TestCase):
         _seed_state(self.sender_repo, targets=["deploy"], max_attempts=99)
 
     def test_stop_signal_causes_clean_exit(self):
-        """Sender exits 0 when stop=true is written to receiver-state.json."""
+        """Sender exits 0 when stop=true is committed and pushed to the remote."""
 
         def write_stop_after_delay():
             time.sleep(3)
@@ -340,6 +340,9 @@ class TestSenderStopSignal(unittest.TestCase):
             )
             _git(self.sender_repo, "add", ".")
             _git(self.sender_repo, "commit", "-m", "stop signal")
+            _git(
+                self.sender_repo, "push", "origin", "main"
+            )  # must push so sender pulls it
 
         t = threading.Thread(target=write_stop_after_delay, daemon=True)
         t.start()

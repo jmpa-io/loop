@@ -49,7 +49,32 @@ def run_target(target: str, branch: str) -> bool:
     attempt = sender.get("attempts", {}).get(target, 1)
     lib.log(f"▶ {target} (attempt {attempt}/{max_att})")
 
-    result = subprocess.run(["make", target], cwd=str(REPO))
+    # Write output to runs/logs/<target>-<timestamp>.log
+    logs_dir = REPO / "runs" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    log_file = logs_dir / f"{target}-{timestamp}.log"
+
+    result = subprocess.run(
+        ["make", target],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+    )
+
+    log_content = (
+        f"target: {target}\nattempt: {attempt}/{max_att}\nexit_code: {result.returncode}\n"
+        f"\n--- stdout ---\n{result.stdout}"
+        f"\n--- stderr ---\n{result.stderr}"
+    )
+    log_file.write_text(log_content)
+    lib.log(f"Log written: {log_file.relative_to(REPO)}")
+
+    # Echo output to terminal too
+    if result.stdout:
+        print(result.stdout, end="", flush=True)
+    if result.stderr:
+        print(result.stderr, end="", flush=True)
 
     if result.returncode == 0:
         lib.log_ok(f"{target} succeeded")
@@ -61,9 +86,8 @@ def run_target(target: str, branch: str) -> bool:
     # ── Failure path ────────────────────────────────────────────────────────
 
     # Check for configurable blockers in the latest run log
-    runs_dir = REPO / "runs"
     logs = sorted(
-        runs_dir.glob(f"{target}-*.log"), key=lambda p: p.stat().st_mtime, reverse=True
+        logs_dir.glob(f"{target}-*.log"), key=lambda p: p.stat().st_mtime, reverse=True
     )
     blocker_patterns = receiver.get("blocker_patterns", [])
     if logs and blocker_patterns:

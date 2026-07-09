@@ -144,14 +144,20 @@ def register_ours_driver(repo: Path) -> None:
 
 def git_pull(repo: Path, branch: str) -> None:
     """
-    Pull with rebase, preserving completed_targets across the pull.
+    Pull with rebase, preserving sender-state.json's completed_targets.
 
-    Problem: --autostash stashes sender-state.json, then the stash-pop
-    merges it back. During stash-pop 'our side' is the just-pulled remote
-    version, so the stash is discarded and completed_targets can shrink.
+    Two separate concerns handled here:
 
-    Fix: snapshot the file first, then merge by taking the UNION of
-    completed_targets after the pull.
+    1. sender-state.json (owned by sender):
+       --autostash stashes the file, then pops it back after the pull.
+       During stash-pop the local version wins, so completed_targets added
+       remotely can be lost. Fix: snapshot before pull, take UNION after.
+
+    2. receiver-state.json (owned by receiver):
+       --autostash stashes the local copy (fix_pushed=false), then pops it
+       back after the pull — overwriting the remote version (fix_pushed=true).
+       Fix: after the pull, explicitly checkout receiver-state.json from the
+       remote ref to ensure we always have the latest receiver state.
     """
     backup = load_sender_state(repo)
 
@@ -166,6 +172,10 @@ def git_pull(repo: Path, branch: str) -> None:
         "theirs",
         "--quiet",
     )
+
+    # Always restore receiver-state.json from the remote — autostash must not
+    # overwrite it with our stale local copy.
+    git(repo, "checkout", f"origin/{branch}", "--", "receiver-state.json")
 
     if backup:
         current = load_sender_state(repo)
