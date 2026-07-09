@@ -96,8 +96,9 @@ runs/
 
 | Target | What it does |
 |---|---|
-| `make loop-start-sender` | Start the sender (runner/executor) in a detached tmux session |
-| `make loop-start-receiver` | Start the receiver (OpenCode fixer) in a detached tmux session |
+| `make loop-start-sender` | Start the sender. Optionally pass `TARGETS=` to set targets first. |
+| `make loop-start-receiver` | Start the receiver. Optionally pass `TARGETS=` to set targets first. |
+| `make loop-targets TARGETS="..."` | Update targets in `receiver-state.json` without starting the loop. |
 | `make loop-attach` | Attach to the running sender or receiver tmux session |
 | `make loop-stop` | Kill local tmux session and signal the remote machine to stop immediately |
 | `make loop-pause` | Kill local tmux session and signal the remote machine to pause after current target |
@@ -105,6 +106,26 @@ runs/
 | `make loop-reset` | Clear all state — all targets re-run from scratch on next `loop-start-sender` |
 | `make loop-ack` | Acknowledge a human action or resume after a pause |
 | `make loop-test` | Run the unit test suite |
+
+### Setting targets via Make
+
+Instead of editing `receiver-state.json` manually, pass `TARGETS=` directly:
+
+```bash
+# Set targets and start the sender in one command
+make loop-start-sender TARGETS="build test deploy"
+
+# Set targets and start the receiver in one command  
+make loop-start-receiver TARGETS="build test deploy"
+
+# Update targets without starting (useful on either machine before starting)
+make loop-targets TARGETS="build test deploy"
+
+# Targets can be space-separated, comma-separated, or mixed
+make loop-targets TARGETS="build,test deploy"
+```
+
+`TARGETS=` **overwrites** the targets list in `receiver-state.json` while preserving everything else — `deps`, `max_attempts`, `blocker_patterns`, etc. If `receiver-state.json` does not exist it is created from the template.
 
 ---
 
@@ -180,6 +201,7 @@ All scripts live in `.loop/bin/` and are called via the Makefile.
 | `bin/sender.py` | Sender | Core loop — reads targets from `receiver-state.json`, runs `make <target>` in dependency order, writes results to `sender-state.json`, polls for fix from receiver |
 | `bin/sender_resilient.py` | Sender | Crash-resilient wrapper — restarts `sender.py` on crash, pulls latest code first, auto-creates `loop-context.md`. This is what `make loop-start-sender` runs. |
 | `bin/receiver.py` | Receiver | Polls `sender-state.json` for failures, invokes OpenCode to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
+| `bin/loop_targets.py` | Either | Updates the targets list in `receiver-state.json`. Called by `make loop-targets` and `make loop-start-sender/receiver TARGETS=`. |
 | `bin/loop_stop.py` | Either | Kills local tmux session, sets `stop=true` in `receiver-state.json`, pushes — both sides exit on next pull |
 | `bin/loop_pause.py` | Either | Kills local tmux session, sets `pause=true` in `receiver-state.json`, pushes — sender finishes current target then waits |
 | `bin/loop_reset.py` | Either | Resets both state files, commits and pushes — all targets re-run from scratch |

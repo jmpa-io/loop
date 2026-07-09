@@ -10,8 +10,12 @@
 # Path to this Makefile's directory — works whether included or run directly.
 LOOP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-loop-start-sender: ## Loop: start the sender (runner/executor) in a detached tmux session.
+loop-start-sender: ## Loop: start the sender. Optionally pass TARGETS="build test deploy" to set targets first.
 loop-start-sender:
+	@if [ -n "$(TARGETS)" ]; then \
+		echo "Setting targets: $(TARGETS)"; \
+		python3 $(LOOP_DIR)bin/loop_targets.py $(TARGETS); \
+	fi
 	@SESSION="homelab-loop"; \
 	SCRIPT="$(LOOP_DIR)bin/sender_resilient.py"; \
 	if pgrep -f "sender_resilient.py" > /dev/null 2>&1; then \
@@ -28,8 +32,12 @@ loop-start-sender:
 		echo "Sender started. Run 'make loop-attach' to watch it."; \
 	fi
 
-loop-start-receiver: ## Loop: start the receiver (OpenCode fixer) in a detached tmux session.
+loop-start-receiver: ## Loop: start the receiver. Optionally pass TARGETS="build test deploy" to set targets first.
 loop-start-receiver:
+	@if [ -n "$(TARGETS)" ]; then \
+		echo "Setting targets: $(TARGETS)"; \
+		python3 $(LOOP_DIR)bin/loop_targets.py $(TARGETS); \
+	fi
 	@SESSION="homelab-loop-receiver"; \
 	SCRIPT="$(LOOP_DIR)bin/receiver.py"; \
 	if pgrep -f "receiver.py" > /dev/null 2>&1; then \
@@ -64,6 +72,14 @@ loop-pause: ## Loop: pause after the current target completes. Run 'make loop-ac
 loop-pause:
 	@python3 $(LOOP_DIR)bin/loop_pause.py
 
+loop-targets: ## Loop: set targets in receiver-state.json. Usage: make loop-targets TARGETS="build test deploy"
+loop-targets:
+	@if [ -z "$(TARGETS)" ]; then \
+		echo "Usage: make loop-targets TARGETS=\"build test deploy\""; \
+		exit 1; \
+	fi
+	@python3 $(LOOP_DIR)bin/loop_targets.py $(TARGETS)
+
 loop-status: ## Loop: show current status, completed/failed targets, and attempt counts.
 loop-status:
 	@python3 $(LOOP_DIR)bin/loop_status.py
@@ -80,4 +96,4 @@ loop-test: ## Loop: run unit tests.
 loop-test:
 	@python3 $(LOOP_DIR)tests/test_loop.py
 
-.PHONY += loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-status loop-reset loop-ack loop-test
+.PHONY += loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-targets loop-status loop-reset loop-ack loop-test

@@ -2226,6 +2226,120 @@ class TestLoopResetPushPath(unittest.TestCase):
         self.assertEqual(2, push_count[0])
 
 
+
+# ===========================================================================
+# Unit: loop_targets.py
+# ===========================================================================
+
+
+class TestLoopTargets(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_targets(self, args: list):
+        import loop_targets
+        with patch.object(loop_targets, "REPO", self.repo):
+            with patch.object(loop_targets, "TEMPLATE", LOOP_REPO / "receiver-state.json"):
+                old_argv = sys.argv
+                sys.argv = ["loop_targets.py"] + args
+                try:
+                    loop_targets.main()
+                except SystemExit:
+                    pass
+                finally:
+                    sys.argv = old_argv
+
+    def test_sets_targets_from_multiple_args(self):
+        self._run_targets(["build", "test", "deploy"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test", "deploy"], rc["targets"])
+
+    def test_sets_targets_from_space_separated_string(self):
+        self._run_targets(["build test deploy"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test", "deploy"], rc["targets"])
+
+    def test_sets_targets_from_comma_separated_string(self):
+        self._run_targets(["build,test,deploy"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test", "deploy"], rc["targets"])
+
+    def test_preserves_existing_fields(self):
+        rc = lib.load_receiver_state(self.repo)
+        rc["max_attempts"] = 7
+        rc["blocker_patterns"] = [{"pattern": "foo", "message": "bar"}]
+        lib.save_receiver_state(self.repo, rc)
+
+        self._run_targets(["build", "test"])
+
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(7, rc["max_attempts"])
+        self.assertEqual([{"pattern": "foo", "message": "bar"}], rc["blocker_patterns"])
+
+    def test_overwrites_existing_targets(self):
+        rc = lib.load_receiver_state(self.repo)
+        rc["targets"] = ["old-target"]
+        lib.save_receiver_state(self.repo, rc)
+
+        self._run_targets(["build", "test"])
+
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test"], rc["targets"])
+
+    def test_deduplicates_targets(self):
+        self._run_targets(["build", "test", "build"])
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test"], rc["targets"])
+
+    def test_exits_1_with_no_args(self):
+        import loop_targets
+        with patch.object(loop_targets, "REPO", self.repo):
+            sys.argv = ["loop_targets.py"]
+            with self.assertRaises(SystemExit) as ctx:
+                loop_targets.main()
+            self.assertEqual(1, ctx.exception.code)
+
+    def test_creates_receiver_state_if_missing(self):
+        # Delete receiver-state.json
+        (self.repo / "receiver-state.json").unlink()
+
+        self._run_targets(["build", "test"])
+
+        rc = lib.load_receiver_state(self.repo)
+        self.assertEqual(["build", "test"], rc["targets"])
+        # Should have bootstrapped with defaults
+        self.assertIn("max_attempts", rc)
+        self.assertIn("fix_pushed", rc)
+
+
+class TestParseTargets(unittest.TestCase):
+    def setUp(self):
+        import loop_targets
+        self.fn = loop_targets.parse_targets
+
+    def test_multiple_args(self):
+        self.assertEqual(["a", "b", "c"], self.fn(["a", "b", "c"]))
+
+    def test_space_separated(self):
+        self.assertEqual(["a", "b", "c"], self.fn(["a b c"]))
+
+    def test_comma_separated(self):
+        self.assertEqual(["a", "b", "c"], self.fn(["a,b,c"]))
+
+    def test_mixed(self):
+        self.assertEqual(["a", "b", "c", "d"], self.fn(["a,b", "c d"]))
+
+    def test_deduplicates(self):
+        self.assertEqual(["a", "b"], self.fn(["a", "b", "a"]))
+
+    def test_empty_strings_filtered(self):
+        self.assertEqual(["a", "b"], self.fn(["a", "", "b"]))
+
+    def test_extra_whitespace(self):
+        self.assertEqual(["a", "b"], self.fn(["  a   b  "]))
+
+
 if __name__ == "__main__":
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(sys.modules[__name__])
