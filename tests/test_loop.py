@@ -1642,6 +1642,552 @@ class TestLoopResilientContextCreation(unittest.TestCase):
         self.assertIn("Do not overwrite me", context_file.read_text())
 
 
+
+
+# ===========================================================================
+# Unit: lib.py -- logging helpers
+# ===========================================================================
+
+
+class TestLoggingHelpers(unittest.TestCase):
+    def test_log_ok(self):
+        with patch("builtins.print") as mock_print:
+            lib.log_ok("all good")
+            msg = mock_print.call_args[0][0]
+            self.assertIn("all good", msg)
+            self.assertIn("✓", msg)
+
+    def test_log_fail(self):
+        with patch("builtins.print") as mock_print:
+            lib.log_fail("something broke")
+            msg = mock_print.call_args[0][0]
+            self.assertIn("something broke", msg)
+            self.assertIn("✗", msg)
+
+    def test_log_skip(self):
+        with patch("builtins.print") as mock_print:
+            lib.log_skip("skipping")
+            msg = mock_print.call_args[0][0]
+            self.assertIn("skipping", msg)
+            self.assertIn("⊘", msg)
+
+    def test_log_wait(self):
+        with patch("builtins.print") as mock_print:
+            lib.log_wait("waiting")
+            msg = mock_print.call_args[0][0]
+            self.assertIn("waiting", msg)
+            self.assertIn("⏳", msg)
+
+
+# ===========================================================================
+# Unit: lib.py -- git helpers
+# ===========================================================================
+
+
+class TestGitHelpers(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_current_branch_returns_main(self):
+        branch = lib.current_branch(self.repo)
+        self.assertEqual("main", branch)
+
+    def test_register_ours_driver_does_not_raise(self):
+        lib.register_ours_driver(self.repo)
+
+    def test_git_returns_completed_process(self):
+        result = lib.git(self.repo, "status")
+        self.assertEqual(0, result.returncode)
+
+
+# ===========================================================================
+# Unit: lib.py -- git_pull union merge
+# ===========================================================================
+
+
+class TestGitPullUnionMerge(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_git_pull_preserves_completed_targets(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a"]
+        lib.save_sender_state(self.repo, sender)
+
+        def fake_git(repo, *args, **kwargs):
+            if "pull" in args:
+                s = lib.load_sender_state(repo)
+                s["completed_targets"] = ["b"]
+                lib.save_sender_state(repo, s)
+            return MagicMock(returncode=0)
+
+        with patch("lib.git", side_effect=fake_git):
+            lib.git_pull(self.repo, "main")
+
+        sender = lib.load_sender_state(self.repo)
+        completed = set(sender["completed_targets"])
+        self.assertIn("a", completed)
+        self.assertIn("b", completed)
+
+    def test_git_pull_removes_failed_if_completed(self):
+        sender = lib.load_sender_state(self.repo)
+        sender["completed_targets"] = ["a"]
+        sender["failed_targets"] = []
+        lib.save_sender_state(self.repo, sender)
+
+        def fake_git(repo, *args, **kwargs):
+            if "pull" in args:
+                s = lib.load_sender_state(repo)
+                s["completed_targets"] = []
+                s["failed_targets"] = ["a"]
+                lib.save_sender_state(repo, s)
+            return MagicMock(returncode=0)
+
+        with patch("lib.git", side_effect=fake_git):
+            lib.git_pull(self.repo, "main")
+
+        sender = lib.load_sender_state(self.repo)
+        self.assertNotIn("a", sender.get("failed_targets", []))
+
+    def test_git_pull_with_empty_state_does_not_crash(self):
+        lib.save_sender_state(self.repo, {})
+        with patch("lib.git", return_value=MagicMock(returncode=0)):
+            lib.git_pull(self.repo, "main")
+
+
+# ===========================================================================
+# Unit: lib.py -- push_sender_state
+# ===========================================================================
+
+
+class TestPushSenderState(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_nothing_to_commit_returns_early(self):
+        calls = []
+
+        def fake_git(repo, *args, **kwargs):
+            calls.append(args[0])
+            if args[0] == "diff":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        with patch("lib.git", side_effect=fake_git):
+            lib.push_sender_state(self.repo, "main", "test")
+
+        self.assertNotIn("commit", calls)
+
+    def test_commits_and_pushes_on_change(self):
+        calls = []
+
+        def fake_git(repo, *args, **kwargs):
+            calls.append(args[0])
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0)
+
+        with patch("lib.git", side_effect=fake_git):
+            lib.push_sender_state(self.repo, "main", "test")
+
+        self.assertIn("commit", calls)
+        self.assertIn("push", calls)
+
+    def test_retries_on_push_failure(self):
+        push_count = [0]
+
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                push_count[0] += 1
+                return MagicMock(returncode=1 if push_count[0] == 1 else 0)
+            return MagicMock(returncode=0)
+
+        with patch("lib.git", side_effect=fake_git):
+            lib.push_sender_state(self.repo, "main", "retry")
+
+        self.assertEqual(2, push_count[0])
+
+
+# ===========================================================================
+# Unit: sender.py -- fix_pushed polling in run_target
+# ===========================================================================
+
+
+class TestRunTargetFixPolling(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+        (self.repo / "runs").mkdir(exist_ok=True)
+
+    def _run_failed_target(self, on_pull=None):
+        import sender as loop
+        with patch.object(loop, "REPO", self.repo):
+            with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                with patch("lib.git", return_value=MagicMock(returncode=0)):
+                    with patch("lib.push_sender_state"):
+                        with patch("lib.git_pull", side_effect=on_pull or (lambda r, b: None)):
+                            with patch("time.sleep"):
+                                return loop.run_target("a", "main")
+
+    def test_returns_false_when_fix_pushed(self):
+        poll_count = [0]
+
+        def on_pull(repo, branch):
+            poll_count[0] += 1
+            if poll_count[0] >= 2:
+                rc = lib.load_receiver_state(repo)
+                rc["fix_pushed"] = True
+                lib.save_receiver_state(repo, rc)
+
+        result = self._run_failed_target(on_pull=on_pull)
+        self.assertFalse(result)
+        self.assertGreaterEqual(poll_count[0], 2)
+
+    def test_exits_on_stop_signal_while_waiting(self):
+        import sender as loop
+
+        def on_pull(repo, branch):
+            rc = lib.load_receiver_state(repo)
+            rc["stop"] = True
+            lib.save_receiver_state(repo, rc)
+
+        with patch.object(loop, "REPO", self.repo):
+            with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                with patch("lib.git", return_value=MagicMock(returncode=0)):
+                    with patch("lib.push_sender_state"):
+                        with patch("lib.git_pull", side_effect=on_pull):
+                            with patch("time.sleep"):
+                                with self.assertRaises(SystemExit):
+                                    loop.run_target("a", "main")
+
+    def test_times_out_after_18_polls(self):
+        result = self._run_failed_target()
+        self.assertFalse(result)
+
+
+# ===========================================================================
+# Unit: sender.py -- main() needs_human resume path
+# ===========================================================================
+
+
+class TestSenderMainNeedsHuman(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_main(self, on_pull):
+        import sender as loop
+        with patch.object(loop, "REPO", self.repo):
+            with patch.object(loop, "SENDER_STATE_PATH", self.repo / "sender-state.json"):
+                with patch.object(loop, "RECEIVER_STATE_PATH", self.repo / "receiver-state.json"):
+                    with patch("lib.git", return_value=MagicMock(returncode=0)):
+                        with patch("lib.git_pull", side_effect=on_pull):
+                            with patch("lib.push_sender_state"):
+                                with patch("time.sleep"):
+                                    try:
+                                        loop.main()
+                                    except SystemExit:
+                                        pass
+
+    def test_resumes_when_fix_pushed(self):
+        tick = [0]
+
+        def on_pull(repo, branch):
+            tick[0] += 1
+            rc = lib.load_receiver_state(repo)
+            if tick[0] == 1:
+                rc["fix_pushed"] = True
+            elif tick[0] >= 2:
+                rc["stop"] = True
+            lib.save_receiver_state(repo, rc)
+
+        sender = lib.load_sender_state(self.repo)
+        sender["status"] = "needs_human"
+        sender["human_action"] = "Fix the server"
+        lib.save_sender_state(self.repo, sender)
+
+        self._run_main(on_pull)
+        self.assertGreaterEqual(tick[0], 1)
+
+    def test_stays_waiting_without_fix_pushed(self):
+        tick = [0]
+
+        def on_pull(repo, branch):
+            tick[0] += 1
+            if tick[0] >= 3:
+                rc = lib.load_receiver_state(repo)
+                rc["stop"] = True
+                lib.save_receiver_state(repo, rc)
+
+        sender = lib.load_sender_state(self.repo)
+        sender["status"] = "needs_human"
+        sender["human_action"] = "Fix something"
+        lib.save_sender_state(self.repo, sender)
+
+        self._run_main(on_pull)
+        self.assertGreaterEqual(tick[0], 3)
+
+
+# ===========================================================================
+# Unit: receiver.py -- notify_human
+# ===========================================================================
+
+
+class TestNotifyHuman(unittest.TestCase):
+    def test_prints_action_required_banner(self):
+        import receiver as opencode_loop
+        sender = {"human_action": "Reboot the server"}
+        with patch("subprocess.run"):
+            with patch("builtins.print") as mock_print:
+                opencode_loop.notify_human(sender, "deploy", "deploy-001.log")
+        printed = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("ACTION REQUIRED", printed)
+        self.assertIn("Reboot the server", printed)
+
+    def test_falls_back_to_log_when_no_human_action(self):
+        import receiver as opencode_loop
+        with patch("subprocess.run"):
+            with patch("builtins.print") as mock_print:
+                opencode_loop.notify_human({}, "deploy", "deploy-001.log")
+        printed = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("deploy-001.log", printed)
+
+    def test_calls_osascript(self):
+        import receiver as opencode_loop
+        calls = []
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+            with patch("builtins.print"):
+                opencode_loop.notify_human({"human_action": "Fix it"}, "deploy", "x.log")
+        self.assertTrue(any(isinstance(c, list) and "osascript" in c for c in calls))
+
+
+# ===========================================================================
+# Unit: receiver.py -- set_fix_pushed push retry
+# ===========================================================================
+
+
+class TestSetFixPushedRetry(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_retries_push_on_failure(self):
+        import receiver as opencode_loop
+        push_count = [0]
+
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "push":
+                push_count[0] += 1
+                return MagicMock(returncode=1 if push_count[0] == 1 else 0)
+            return MagicMock(returncode=0)
+
+        with patch.object(opencode_loop, "REPO", self.repo):
+            with patch("lib.git", side_effect=fake_git):
+                opencode_loop.set_fix_pushed(self.repo, "main", "retry test")
+
+        self.assertEqual(2, push_count[0])
+
+
+# ===========================================================================
+# Integration: loop_ack.py -- push success and failure paths
+# ===========================================================================
+
+
+class TestLoopAckPushPath(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_ack_with_git(self, git_fn):
+        import loop_ack
+        printed = []
+        with patch.object(loop_ack, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git", side_effect=git_fn):
+                    with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                        with patch("time.sleep"):
+                            try:
+                                loop_ack.main()
+                            except SystemExit:
+                                pass
+        return printed
+
+    def test_succeeds_on_first_push(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        printed = self._run_ack_with_git(fake_git)
+        self.assertTrue(any("resume" in m.lower() for m in printed))
+
+    def test_fails_after_5_retries(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=1)
+
+        printed = self._run_ack_with_git(fake_git)
+        self.assertTrue(any("5 attempts" in m for m in printed))
+
+
+# ===========================================================================
+# Integration: loop_stop.py -- push success and failure paths
+# ===========================================================================
+
+
+class TestLoopStopPushPath(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_stop_with_git(self, git_fn):
+        import loop_stop
+        printed = []
+        with patch.object(loop_stop, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git", side_effect=git_fn):
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                            with patch("time.sleep"):
+                                try:
+                                    loop_stop.main()
+                                except SystemExit:
+                                    pass
+        return printed
+
+    def test_succeeds_on_first_push(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        printed = self._run_stop_with_git(fake_git)
+        self.assertTrue(any("pushed" in m.lower() for m in printed))
+
+    def test_fails_after_5_retries(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=1)
+
+        printed = self._run_stop_with_git(fake_git)
+        self.assertTrue(any("5 attempts" in m for m in printed))
+
+
+# ===========================================================================
+# Integration: loop_pause.py -- push success and failure paths
+# ===========================================================================
+
+
+class TestLoopPausePushPath(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def _run_pause_with_git(self, git_fn):
+        import loop_pause
+        printed = []
+        with patch.object(loop_pause, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git", side_effect=git_fn):
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                        with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                            with patch("time.sleep"):
+                                try:
+                                    loop_pause.main()
+                                except SystemExit:
+                                    pass
+        return printed
+
+    def test_succeeds_on_first_push(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        printed = self._run_pause_with_git(fake_git)
+        self.assertTrue(any("pushed" in m.lower() or "resume" in m.lower() for m in printed))
+
+    def test_fails_after_5_retries(self):
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=1)
+
+        printed = self._run_pause_with_git(fake_git)
+        self.assertTrue(any("5 attempts" in m for m in printed))
+
+
+# ===========================================================================
+# Integration: loop_reset.py -- push path
+# ===========================================================================
+
+
+class TestLoopResetPushPath(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+
+    def test_pushes_when_state_changed(self):
+        import loop_reset
+        printed = []
+        push_count = [0]
+
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                push_count[0] += 1
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        with patch.object(loop_reset, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git", side_effect=fake_git):
+                    with patch("builtins.print", side_effect=lambda m: printed.append(m)):
+                        try:
+                            loop_reset.main()
+                        except SystemExit:
+                            pass
+
+        self.assertGreater(push_count[0], 0)
+
+    def test_retries_on_push_failure(self):
+        import loop_reset
+        push_count = [0]
+
+        def fake_git(repo, *args, **kwargs):
+            if args[0] == "diff":
+                return MagicMock(returncode=1)
+            if args[0] == "push":
+                push_count[0] += 1
+                return MagicMock(returncode=1 if push_count[0] == 1 else 0)
+            return MagicMock(returncode=0)
+
+        with patch.object(loop_reset, "REPO", self.repo):
+            with patch("lib.current_branch", return_value="main"):
+                with patch("lib.git", side_effect=fake_git):
+                    with patch("builtins.print"):
+                        try:
+                            loop_reset.main()
+                        except SystemExit:
+                            pass
+
+        self.assertEqual(2, push_count[0])
+
+
 if __name__ == "__main__":
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(sys.modules[__name__])
