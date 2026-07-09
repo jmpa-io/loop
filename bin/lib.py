@@ -32,11 +32,21 @@ def repo_root() -> Path:
     """
     Return the consuming repo root.
 
-    Scripts live at  <repo>/.loop/bin/<script>.py
+    If the LOOP_REPO environment variable is set, use that path directly.
+    This allows integration tests (and direct script invocation outside a
+    submodule context) to override the repo root without needing the
+    .loop/bin/... directory structure.
+
+    Otherwise, scripts are expected to live at <repo>/.loop/bin/<script>.py:
     So:  Path(__file__).resolve().parent  → .loop/bin
          .parent                           → .loop
          .parent                           → <repo>
     """
+    import os
+
+    override = os.environ.get("LOOP_REPO")
+    if override:
+        return Path(override).resolve()
     return Path(__file__).resolve().parent.parent.parent
 
 

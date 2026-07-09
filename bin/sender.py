@@ -12,6 +12,7 @@ File ownership:
     receiver-state.json — this script reads it only (receiver owns it)
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ import lib
 REPO = lib.repo_root()
 SENDER_STATE_PATH = REPO / "sender-state.json"
 RECEIVER_STATE_PATH = REPO / "receiver-state.json"
-FIX_POLL = 10  # seconds between polls when waiting for fix or human
+FIX_POLL = int(os.environ.get("LOOP_POLL_INTERVAL", "10"))  # seconds between polls
 
 
 # ---------------------------------------------------------------------------

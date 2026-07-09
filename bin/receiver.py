@@ -11,6 +11,7 @@ File ownership:
     receiver-state.json — receiver writes (this script owns it)
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import lib
 
 REPO = lib.repo_root()
-POLL_INTERVAL = 10  # seconds between polls
+POLL_INTERVAL = int(os.environ.get("LOOP_POLL_INTERVAL", "10"))  # seconds between polls
 MAX_ERRORS = 3  # unclear OpenCode responses before force-unblocking
 TIMEOUT_SECS = 1800  # 30 min max per OpenCode invocation
 
