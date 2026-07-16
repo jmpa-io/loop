@@ -2226,7 +2226,6 @@ class TestLoopResetPushPath(unittest.TestCase):
         self.assertEqual(2, push_count[0])
 
 
-
 # ===========================================================================
 # Unit: loop_targets.py
 # ===========================================================================
@@ -2239,8 +2238,11 @@ class TestLoopTargets(unittest.TestCase):
 
     def _run_targets(self, args: list):
         import loop_targets
+
         with patch.object(loop_targets, "REPO", self.repo):
-            with patch.object(loop_targets, "TEMPLATE", LOOP_REPO / "receiver-state.json"):
+            with patch.object(
+                loop_targets, "TEMPLATE", LOOP_REPO / "receiver-state.json"
+            ):
                 old_argv = sys.argv
                 sys.argv = ["loop_targets.py"] + args
                 try:
@@ -2294,6 +2296,7 @@ class TestLoopTargets(unittest.TestCase):
 
     def test_exits_1_with_no_args(self):
         import loop_targets
+
         with patch.object(loop_targets, "REPO", self.repo):
             sys.argv = ["loop_targets.py"]
             with self.assertRaises(SystemExit) as ctx:
@@ -2316,6 +2319,7 @@ class TestLoopTargets(unittest.TestCase):
 class TestParseTargets(unittest.TestCase):
     def setUp(self):
         import loop_targets
+
         self.fn = loop_targets.parse_targets
 
     def test_multiple_args(self):
@@ -2338,6 +2342,278 @@ class TestParseTargets(unittest.TestCase):
 
     def test_extra_whitespace(self):
         self.assertEqual(["a", "b"], self.fn(["  a   b  "]))
+
+
+
+# ===========================================================================
+# Integration: receiver.py main() loop body — covers lines 269-387, 391
+# ===========================================================================
+
+
+class TestReceiverMainLoop(unittest.TestCase):
+    """
+    Drive receiver.main() through its full loop body.
+
+    Strategy: patch lib.git so no real git calls occur.  The pull at the top
+    of each loop iteration calls lib.git(repo, "pull", ...).  We intercept
+    that call to advance state: after stop_after_pulls pulls we mark the sender
+    as completed AND clear human_action, so the loop exits via the completed
+    check rather than looping forever on the human_action branch.
+
+    notify_human is always patched to a no-op in _run(): after a NEEDS_HUMAN
+    or unclear response the receiver writes human_action to sender-state.json;
+    without the patch the human_action branch would spin forever.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_git_repo(Path(self.tmp) / "repo")
+        (self.repo / "runs" / "logs").mkdir(parents=True, exist_ok=True)
+
+    def _write_log(self, target, name_suffix, text):
+        log = self.repo / "runs" / "logs" / f"{target}-{name_suffix}.log"
+        log.write_text(text)
+        return log
+
+    def _make_git_se(self, stop_after_pulls, on_pull=None):
+        """lib.git side_effect: after stop_after_pulls pull calls, mark completed."""
+        pull_count = [0]
+
+        def _se(repo, *args, **kwargs):
+            if args and args[0] == "pull":
+                pull_count[0] += 1
+                if on_pull:
+                    on_pull(repo, pull_count[0])
+                if pull_count[0] >= stop_after_pulls:
+                    s = lib.load_sender_state(repo)
+                    s["status"] = "completed"
+                    s["human_action"] = None
+                    lib.save_sender_state(repo, s)
+            return MagicMock(returncode=0)
+
+        return _se
+
+    def _run(self, rx, opencode_output="RETRY", stop_after_pulls=3,
+             on_pull=None, subprocess_se=None):
+        mock_proc = MagicMock()
+        mock_proc.stdout = opencode_output
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+        sp = subprocess_se or (lambda cmd, **kw: mock_proc)
+
+        with patch.object(rx, "REPO", self.repo),              patch.object(rx, "notify_human"),              patch("lib.git", side_effect=self._make_git_se(stop_after_pulls, on_pull)),              patch("subprocess.run", side_effect=sp),              patch("time.sleep"):
+            try:
+                rx.main()
+            except SystemExit:
+                pass
+
+    # ── Lines 246-249: sender-state.json missing ────────────────────────────
+
+    def test_waits_when_sender_state_missing(self):
+        """Receiver sleeps when sender-state.json is absent."""
+        import receiver as rx
+
+        (self.repo / "sender-state.json").unlink()
+
+        pull_count = [0]
+
+        def on_pull(repo, count):
+            pull_count[0] = count
+            if count == 2:
+                lib.save_sender_state(repo, {
+                    "status": "completed",
+                    "targets": ["a"],
+                    "completed_targets": ["a"],
+                    "failed_targets": [],
+                    "attempts": {},
+                    "max_attempts": 3,
+                    "last_result": None,
+                    "last_run_log": None,
+                    "human_action": None,
+                })
+
+        self._run(rx, stop_after_pulls=5, on_pull=on_pull)
+        self.assertGreaterEqual(pull_count[0], 2)
+
+    # ── Lines 258-261: human_action → notify_human called ───────────────────
+
+    def test_human_action_triggers_notify(self):
+        """When sender has human_action set, notify_human is called each tick."""
+        import receiver as rx
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "needs_human"
+        s["human_action"] = "Please fix the server"
+        lib.save_sender_state(self.repo, s)
+
+        notify_calls = [0]
+
+        def fake_notify(sender, target, log):
+            notify_calls[0] += 1
+
+        with patch.object(rx, "REPO", self.repo),              patch.object(rx, "notify_human", side_effect=fake_notify),              patch("lib.git", side_effect=self._make_git_se(3)),              patch("subprocess.run",
+                   return_value=MagicMock(stdout="", stderr="", returncode=0)),              patch("time.sleep"):
+            try:
+                rx.main()
+            except SystemExit:
+                pass
+
+        self.assertGreaterEqual(notify_calls[0], 1)
+
+    # ── Lines 269-295 + 343: OpenCode invoked → RETRY → fix_pushed=true ─────
+
+    def test_opencode_invoked_for_failed_target_retry(self):
+        """Full path: failed target with log → OpenCode called → RETRY → fix_pushed."""
+        import receiver as rx
+
+        self._write_log("a", "20260101-120000", "Error: something broke")
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "running"
+        s["last_result"] = "failed"
+        s["last_run_log"] = "a"
+        lib.save_sender_state(self.repo, s)
+
+        opencode_called = [False]
+
+        def sp(cmd, **kw):
+            if isinstance(cmd, list) and any("opencode" in str(c) for c in cmd):
+                opencode_called[0] = True
+            m = MagicMock()
+            m.stdout = "RETRY"
+            m.stderr = ""
+            m.returncode = 0
+            return m
+
+        self._run(rx, stop_after_pulls=3, subprocess_se=sp)
+
+        self.assertTrue(opencode_called[0], "OpenCode should have been invoked")
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("fix_pushed"), "fix_pushed should be True after RETRY")
+
+    # ── Lines 347-371: NEEDS_HUMAN → sender updated ──────────────────────────
+
+    def test_opencode_needs_human_sets_status(self):
+        """OpenCode returns NEEDS_HUMAN → receiver writes needs_human to sender-state."""
+        import receiver as rx
+
+        self._write_log("a", "20260101-130000", "Error: needs human")
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "running"
+        s["last_result"] = "failed"
+        s["last_run_log"] = "a"
+        lib.save_sender_state(self.repo, s)
+
+        saved = []
+        _real = lib.save_sender_state
+
+        def spy(repo, state):
+            saved.append(dict(state))
+            _real(repo, state)
+
+        def sp(cmd, **kw):
+            m = MagicMock()
+            m.stdout = "NEEDS_HUMAN"
+            m.stderr = ""
+            m.returncode = 0
+            return m
+
+        with patch("lib.save_sender_state", side_effect=spy):
+            self._run(rx, stop_after_pulls=5, subprocess_se=sp)
+
+        nh = next((st for st in saved if st.get("status") == "needs_human"), None)
+        self.assertIsNotNone(nh, "Expected a needs_human write to sender-state")
+        self.assertIn("a", nh.get("human_action", ""))
+
+    # ── Lines 374-387: unclear → forced fix_pushed after MAX_ERRORS ──────────
+
+    def test_opencode_unclear_forces_fix_pushed(self):
+        """After MAX_ERRORS unclear responses, fix_pushed is forced True."""
+        import receiver as rx
+
+        self._write_log("a", "20260101-140000", "Error: something")
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "running"
+        s["last_result"] = "failed"
+        s["last_run_log"] = "a"
+        lib.save_sender_state(self.repo, s)
+
+        def sp(cmd, **kw):
+            m = MagicMock()
+            m.stdout = "this output is unclear and not a known keyword"
+            m.stderr = ""
+            m.returncode = 0
+            return m
+
+        self._run(rx, stop_after_pulls=rx.MAX_ERRORS + 5, subprocess_se=sp)
+
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(
+            rc.get("fix_pushed"),
+            "fix_pushed should be forced True after MAX_ERRORS unclear responses",
+        )
+
+    # ── SUCCESS result ────────────────────────────────────────────────────────
+
+    def test_opencode_success_sets_fix_pushed(self):
+        """OpenCode returns SUCCESS → fix_pushed=True."""
+        import receiver as rx
+
+        self._write_log("a", "20260101-150000", "All good")
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "running"
+        s["last_result"] = "failed"
+        s["last_run_log"] = "a"
+        lib.save_sender_state(self.repo, s)
+
+        self._run(rx, opencode_output="SUCCESS")
+
+        rc = lib.load_receiver_state(self.repo)
+        self.assertTrue(rc.get("fix_pushed"))
+
+    # ── Standing by on non-failure ────────────────────────────────────────────
+
+    def test_stands_by_on_non_failure_status(self):
+        """OpenCode is NOT invoked when last_result is not failed."""
+        import receiver as rx
+
+        s = lib.load_sender_state(self.repo)
+        s["status"] = "running"
+        s["last_result"] = "success"
+        s["last_run_log"] = "a"
+        lib.save_sender_state(self.repo, s)
+
+        invoke_count = [0]
+
+        def sp(cmd, **kw):
+            if isinstance(cmd, list) and any("opencode" in str(c) for c in cmd):
+                invoke_count[0] += 1
+            m = MagicMock()
+            m.stdout = ""
+            m.stderr = ""
+            m.returncode = 0
+            return m
+
+        self._run(rx, stop_after_pulls=3, subprocess_se=sp)
+
+        self.assertEqual(0, invoke_count[0], "OpenCode must NOT be invoked for non-failure")
+
+    # ── POLL_INTERVAL from env var (line 72) ─────────────────────────────────
+
+    def test_poll_interval_from_env(self):
+        """LOOP_POLL_INTERVAL env var controls the POLL_INTERVAL constant."""
+        import os
+        import importlib
+        import receiver as rx
+
+        with patch.dict(os.environ, {"LOOP_POLL_INTERVAL": "42"}):
+            importlib.reload(rx)
+            self.assertEqual(42, rx.POLL_INTERVAL)
+
+        importlib.reload(rx)  # restore default
 
 
 if __name__ == "__main__":

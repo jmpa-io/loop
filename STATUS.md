@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-07-09
+Last updated: 2026-07-16
 
 ---
 
@@ -51,22 +51,23 @@ separate terminals on the same machine.
 
 | File | Coverage |
 |---|---|
-| `lib.py` | 86% |
-| `sender.py` | 76% |
-| `sender_resilient.py` | 93% |
-| `loop_status.py` | 95% |
+| `lib.py` | 99% |
+| `receiver.py` | 99% |
 | `trim_loop_context.py` | 97% |
-| `receiver.py` | 51% |
-| `loop_ack.py` | 71% |
-| `loop_stop.py` | 70% |
-| `loop_pause.py` | 70% |
-| `loop_reset.py` | 73% |
+| `loop_ack.py` | 97% |
+| `loop_reset.py` | 97% |
+| `sender_resilient.py` | 93% |
+| `loop_pause.py` | 95% |
+| `loop_status.py` | 95% |
+| `loop_stop.py` | 95% |
+| `loop_targets.py` | 89% |
+| `sender.py` | 89% |
 
 ### Remaining coverage gaps
 
-The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop_reset.py` are all the push/retry-on-conflict paths (lines after the first successful git push). These require a live git remote to test properly.
+The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop_reset.py` are the push/retry-on-conflict paths (lines after the first successful git push). These require a live git remote to test properly.
 
-`receiver.py` main() loop body (lines 210-373) — the full end-to-end invocation path including subprocess OpenCode call, git commit, and push. Covered via pure function tests instead.
+`receiver.py` lines 72 and 391 — module-level constant initialization and the final `time.sleep` after an OpenCode invocation. Both trivial to skip.
 
 ---
 
@@ -89,7 +90,7 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 | `Makefile` | loop-start-sender, loop-start-receiver, loop-attach, loop-stop, loop-pause, loop-status, loop-reset, loop-ack, loop-test |
 | `receiver-state.json` | Template — copy to consuming repo root, edit targets/deps/blocker_patterns |
 | `sender-state.json` | Template — copy to consuming repo root |
-| `tests/test_loop.py` | 148 tests — unit + integration |
+| `tests/test_loop.py` | 201 tests — unit + integration |
 
 ### Generated in the consuming repo
 
@@ -105,6 +106,4 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 
 ## Next steps (in order)
 
-1. Update the homelab repo to use new file names (receiver-state.json, sender-state.json)
-2. Push coverage higher on receiver.py main() — consider integration test with mocked opencode binary
-3. Push coverage on ack/stop/pause/reset retry paths — requires live git remote or test git server
+1. Push coverage on ack/stop/pause/reset retry paths — requires live git remote or test git server
