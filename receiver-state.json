@@ -1,9 +1,34 @@
 {
   "fix_pushed": false,
   "last_fix": null,
-  "targets": [],
-  "deps": {},
-  "max_attempts": 10,
+  "targets": [
+    "proxmox-host-preflight",
+    "nas-preflight",
+    "run-playbook-proxmox",
+    "deploy-nginx-reverse-proxy",
+    "fix-server-3-bridge",
+    "deploy-k3s",
+    "infra-report",
+    "deploy-k3s-apps",
+    "deploy-nfs",
+    "deploy-obs-stack",
+    "deploy-uptime-kuma",
+    "deploy-pbs",
+    "deploy-dns",
+    "k3s-report",
+    "verify-cluster"
+  ],
+  "deps": {
+    "run-playbook-proxmox": ["proxmox-host-preflight"],
+    "fix-server-3-bridge": ["proxmox-host-preflight"],
+    "deploy-k3s": ["fix-server-3-bridge"],
+    "deploy-k3s-apps": ["deploy-k3s"],
+    "deploy-nfs": ["deploy-k3s"],
+    "deploy-dns": ["deploy-k3s-apps"],
+    "k3s-report": ["deploy-k3s"],
+    "verify-cluster": ["deploy-k3s-apps"]
+  },
+  "max_attempts": 200,
   "blocker_patterns": [],
   "stop": false,
   "pause": false
