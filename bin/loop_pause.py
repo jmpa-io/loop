@@ -2,7 +2,7 @@
 """
 bin/loop_pause.py — signal both sides of the loop to pause after the current target.
 
-Kills the local tmux session (if any), sets pause=true in loop-state.json,
+Kills the local tmux session (if any), sets pause=true in receiver-state.json,
 then commits and pushes so the remote machine pauses on its next git pull.
 The loop will finish its current in-flight target then wait.
 Run 'make loop-ack' to resume, or 'make loop-stop' to stop entirely.

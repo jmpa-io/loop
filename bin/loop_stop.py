@@ -2,7 +2,7 @@
 """
 bin/loop_stop.py — signal both sides of the loop to stop immediately.
 
-Kills the local tmux session (if any), sets stop=true in loop-state.json,
+Kills the local tmux session (if any), sets stop=true in receiver-state.json,
 then commits and pushes so the remote machine exits on its next git pull.
 Retries up to 5 times on push conflict.
 """
