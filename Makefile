@@ -92,8 +92,9 @@ loop-ack: ## Loop: acknowledge a human action / resume after pause.
 loop-ack:
 	@python3 $(LOOP_DIR)bin/loop_ack.py
 
-loop-test: ## Loop: run unit tests.
+loop-test: ## Loop: run unit and integration tests.
 loop-test:
 	@python3 $(LOOP_DIR)tests/test_loop.py
+	@python3 $(LOOP_DIR)tests/test_integration.py
 
 .PHONY += loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-targets loop-status loop-reset loop-ack loop-test

@@ -45,7 +45,7 @@ separate terminals on the same machine.
 - **stop/pause signals** — `make loop-stop` and `make loop-pause` kill local tmux and push signal via git
 - **loop-start-sender / loop-start-receiver split** — separate make targets for each side
 - **Auto-create loop-context.md** — created at startup by `sender_resilient.py` if missing
-- **148 passing tests, 76% coverage** — up from 42% at previous session
+- **210 passing tests, 76% coverage** — 201 unit tests + 9 integration tests
 
 ### Coverage breakdown
 
@@ -90,7 +90,8 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 | `Makefile` | loop-start-sender, loop-start-receiver, loop-attach, loop-stop, loop-pause, loop-status, loop-reset, loop-ack, loop-test |
 | `receiver-state.json` | Template — copy to consuming repo root, edit targets/deps/blocker_patterns |
 | `sender-state.json` | Template — copy to consuming repo root |
-| `tests/test_loop.py` | 201 tests — unit + integration |
+| `tests/test_loop.py` | 201 tests — unit tests |
+| `tests/test_integration.py` | 9 tests — end-to-end subprocess integration tests |
 
 ### Generated in the consuming repo
 
