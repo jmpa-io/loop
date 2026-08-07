@@ -308,7 +308,7 @@ def check_hardware_blocker(log_content: str, patterns: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# OpenCode result parsing
+# Claude result parsing
 # ---------------------------------------------------------------------------
 
 

@@ -6,7 +6,7 @@ Last updated: 2026-07-16
 
 ## What this is
 
-A dependency-aware deployment loop with OpenCode self-healing. Two processes
+A dependency-aware deployment loop with Claude self-healing. Two processes
 run on two separate machines and coordinate entirely through git commits — no
 sockets, no HTTP.
 
@@ -14,7 +14,7 @@ sockets, no HTTP.
 [Sender — runner machine]               [Receiver — Mac]
 sender.py  ──── git push ──────────►  receiver.py
   runs make targets in dep order          watches sender-state.json for failures
-  writes sender-state.json                invokes OpenCode to diagnose + fix
+  writes sender-state.json                invokes Claude to diagnose + fix
   reads receiver-state.json               pushes fix, sets fix_pushed=true
   retries on fix  ◄──── git pull ──────
 ```
@@ -41,7 +41,7 @@ separate terminals on the same machine.
 - **Strict file ownership** — sender writes sender-state.json only, receiver writes receiver-state.json only
 - **No waiting_for_fix flag** — receiver infers sender needs fix from sender-state.json directly via `lib.sender_needs_fix()`
 - **Renamed state files** — `loop-state.json` → `receiver-state.json`, `loop-run-state.json` → `sender-state.json`
-- **Extracted pure functions in receiver.py** — `should_invoke_opencode()`, `build_opencode_prompt()`, `gather_previous_logs()`, `set_fix_pushed()`, `notify_human()` — all testable without subprocess
+- **Extracted pure functions in receiver.py** — `should_invoke_claude()`, `build_claude_prompt()`, `gather_previous_logs()`, `set_fix_pushed()`, `notify_human()` — all testable without subprocess
 - **stop/pause signals** — `make loop-stop` and `make loop-pause` kill local tmux and push signal via git
 - **loop-start-sender / loop-start-receiver split** — separate make targets for each side
 - **Auto-create loop-context.md** — created at startup by `sender_resilient.py` if missing
@@ -67,7 +67,7 @@ separate terminals on the same machine.
 
 The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop_reset.py` are the push/retry-on-conflict paths (lines after the first successful git push). These require a live git remote to test properly.
 
-`receiver.py` lines 72 and 391 — module-level constant initialization and the final `time.sleep` after an OpenCode invocation. Both trivial to skip.
+`receiver.py` lines 72 and 391 — module-level constant initialization and the final `time.sleep` after an Claude invocation. Both trivial to skip.
 
 ---
 
@@ -80,7 +80,7 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 | `bin/lib.py` | Shared library — all pure logic: state I/O, git ops, dep resolution, blocker detection, signal helpers, state transitions |
 | `bin/sender.py` | Core sender loop — runs `make <target>` in dep order, retries, polls receiver for fix signal |
 | `bin/sender_resilient.py` | Crash-resilient wrapper — restarts `sender.py` on crash, pulls latest code first, auto-creates `loop-context.md` |
-| `bin/receiver.py` | Receiver — polls sender-state.json for failures, invokes OpenCode to fix, sets fix_pushed in receiver-state.json |
+| `bin/receiver.py` | Receiver — polls sender-state.json for failures, invokes Claude to fix, sets fix_pushed in receiver-state.json |
 | `bin/loop_ack.py` | Acknowledges human action / resumes after pause |
 | `bin/loop_pause.py` | Sets pause signal in receiver-state.json, kills local tmux |
 | `bin/loop_stop.py` | Sets stop signal in receiver-state.json, kills local tmux |
@@ -99,8 +99,8 @@ The uncovered lines in `loop_ack.py`, `loop_stop.py`, `loop_pause.py`, and `loop
 |---|---|---|
 | `receiver-state.json` | Receiver | Config: targets, deps, max attempts, blocker patterns, fix signals, stop/pause |
 | `sender-state.json` | Sender | Runtime state: completed/failed targets, attempt counts, status |
-| `loop-context.md` | You + OpenCode | OpenCode's memory — failure history and fixes. Auto-created on startup. |
-| `runs/` | Sender | Per-target logs, resilient wrapper log, OpenCode invocation logs |
+| `loop-context.md` | You + Claude | Claude's memory — failure history and fixes. Auto-created on startup. |
+| `runs/` | Sender | Per-target logs, resilient wrapper log, Claude invocation logs |
 | `docs/loop-context-archive.md` | Auto | Overflow from loop-context.md when it exceeds 500 lines |
 
 ---

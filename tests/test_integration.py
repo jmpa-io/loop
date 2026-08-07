@@ -8,7 +8,7 @@ file I/O, real process communication.
 
 Fake binaries on PATH replace real infrastructure:
   fake make   — fails on first call per target, succeeds on second
-  fake opencode — outputs RETRY immediately (simulates AI pushing a fix)
+  fake claude — outputs RETRY immediately (simulates AI pushing a fix)
 
 LOOP_REPO env var tells lib.repo_root() which directory to use as the
 consuming repo root (bypasses the .loop/bin/... submodule path assumption).
@@ -108,7 +108,7 @@ def _seed_state(repo: Path, targets: list, deps: dict = None, max_attempts: int 
 
 def _make_fake_bin(tmp: Path) -> Path:
     """
-    Create a bin/ directory with fake make and opencode scripts.
+    Create a bin/ directory with fake make and claude scripts.
     fake make uses FAKE_MAKE_DIR to store per-target call counters.
     """
     fake_bin = tmp / "fake_bin"
@@ -132,13 +132,13 @@ fi
 """)
     fake_make.chmod(0o755)
 
-    fake_opencode = fake_bin / "opencode"
-    fake_opencode.write_text("""\
+    fake_claude = fake_bin / "claude"
+    fake_claude.write_text("""\
 #!/bin/bash
-echo "Fake OpenCode: simulating a fix..."
+echo "Fake Claude: simulating a fix..."
 echo "RETRY"
 """)
-    fake_opencode.chmod(0o755)
+    fake_claude.chmod(0o755)
 
     return fake_bin
 
@@ -378,7 +378,7 @@ class TestSenderReceiverEndToEnd(unittest.TestCase):
         """
         Full end-to-end flow:
         1. Sender runs build — fake_make fails on first call
-        2. Receiver sees failure, invokes fake opencode (outputs RETRY)
+        2. Receiver sees failure, invokes fake claude (outputs RETRY)
         3. Receiver sets fix_pushed=true in receiver-state.json
         4. Sender polls, sees fix_pushed, retries
         5. fake_make succeeds on second call (counter file exists)

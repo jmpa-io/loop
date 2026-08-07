@@ -1,6 +1,6 @@
 # loop
 
-Dependency-aware deployment loop with OpenCode self-healing. Drop it into any repo as a `.loop` submodule, include one line in your Makefile, and you get a full autonomous deployment loop.
+Dependency-aware deployment loop with Claude self-healing. Drop it into any repo as a `.loop` submodule, include one line in your Makefile, and you get a full autonomous deployment loop.
 
 ## How it works
 
@@ -10,7 +10,7 @@ Two processes run on two machines and communicate entirely through git commits �
 [Sender — runner machine]               [Receiver — Mac]
 sender.py  ──── git push ──────────►  receiver.py
   runs make targets in dep order          watches sender-state.json for failures
-  writes sender-state.json                invokes OpenCode to diagnose + fix
+  writes sender-state.json                invokes Claude to diagnose + fix
   reads receiver-state.json               pushes fix, sets fix_pushed=true
   retries on fix  ◄──── git pull ──────
 ```
@@ -40,13 +40,13 @@ These files are created in your **repo root** (not inside `.loop/`) when the loo
 |---|---|---|
 | `receiver-state.json` | Receiver (brain) | Config + signals: target list, dependency graph, max attempts, blocker patterns, fix signals, stop/pause |
 | `sender-state.json` | Sender (runner) | Runtime state: which targets completed/failed, attempt counts, current status, human action message |
-| `loop-context.md` | You + OpenCode | Shared brain — OpenCode reads this in full on every fix invocation. Auto-created at startup if missing. |
+| `loop-context.md` | You + Claude | Shared brain — Claude reads this in full on every fix invocation. Auto-created at startup if missing. |
 
 ### Generated directories (not committed)
 
 | Path | What it is |
 |---|---|
-| `runs/` | Per-target run logs written by the sender. Named `<target>-<timestamp>.log`. OpenCode reads these to diagnose failures. Also contains `resilient.log` and `opencode-loop-<timestamp>.log`. Add `runs/` to your `.gitignore`. |
+| `runs/` | Per-target run logs written by the sender. Named `<target>-<timestamp>.log`. Claude reads these to diagnose failures. Also contains `resilient.log` and `claude-loop-<timestamp>.log`. Add `runs/` to your `.gitignore`. |
 | `docs/loop-context-archive.md` | Auto-generated when `loop-context.md` exceeds 500 lines. Oldest entries are archived here. |
 
 ---
@@ -158,7 +158,7 @@ make loop-targets TARGETS="build,test deploy"
 | `deps` | You | Dependency graph — a target only runs when all its deps have completed |
 | `max_attempts` | You | Max retries per target before it is marked permanently failed |
 | `blocker_patterns` | You | Regex patterns matched against run logs. On match, loop escalates to `needs_human` instead of retrying. |
-| `fix_pushed` | Receiver | Set to true when OpenCode has pushed a fix and the sender should retry |
+| `fix_pushed` | Receiver | Set to true when Claude has pushed a fix and the sender should retry |
 | `last_fix` | Receiver | Free-text description of the last fix applied |
 | `stop` | `loop_stop.py` | Set to true by `make loop-stop` — both sides exit on next pull |
 | `pause` | `loop_pause.py` | Set to true by `make loop-pause` — sender finishes current target then waits |
@@ -200,7 +200,7 @@ All scripts live in `.loop/bin/` and are called via the Makefile.
 | `bin/lib.py` | — | Shared library: state I/O, git ops, dependency resolution, blocker detection, result parsing |
 | `bin/sender.py` | Sender | Core loop — reads targets from `receiver-state.json`, runs `make <target>` in dependency order, writes results to `sender-state.json`, polls for fix from receiver |
 | `bin/sender_resilient.py` | Sender | Crash-resilient wrapper — restarts `sender.py` on crash, pulls latest code first, auto-creates `loop-context.md`. This is what `make loop-start-sender` runs. |
-| `bin/receiver.py` | Receiver | Polls `sender-state.json` for failures, invokes OpenCode to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
+| `bin/receiver.py` | Receiver | Polls `sender-state.json` for failures, invokes Claude to diagnose and fix, writes fix signal to `receiver-state.json`. This is what `make loop-start-receiver` runs. |
 | `bin/loop_targets.py` | Either | Updates the targets list in `receiver-state.json`. Called by `make loop-targets` and `make loop-start-sender/receiver TARGETS=`. |
 | `bin/loop_stop.py` | Either | Kills local tmux session, sets `stop=true` in `receiver-state.json`, pushes — both sides exit on next pull |
 | `bin/loop_pause.py` | Either | Kills local tmux session, sets `pause=true` in `receiver-state.json`, pushes — sender finishes current target then waits |
@@ -217,7 +217,7 @@ All scripts live in `.loop/bin/` and are called via the Makefile.
 - `git`
 - `make`
 - `tmux` — required on both machines. Install with `brew install tmux` (macOS) or `apt install tmux` (Linux).
-- `opencode` CLI — only needed on the receiver side for `loop-start-receiver`
+- `claude` CLI — only needed on the receiver side for `loop-start-receiver`
 
 ---
 

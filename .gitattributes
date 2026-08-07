@@ -1,4 +1,4 @@
-# receiver-state.json — owned EXCLUSIVELY by Mac (OpenCode).
+# receiver-state.json — owned EXCLUSIVELY by Mac (Claude).
 # Contains: targets, deps, max_attempts, fix_pushed.
 # The runner NEVER writes to this file.
 receiver-state.json     merge=ours

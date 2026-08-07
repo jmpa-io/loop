@@ -3,7 +3,7 @@
 bin/receiver.py — receiver side AI self-healing loop.
 
 Polls sender-state.json (written by the sender) for failures.
-When a target fails, invokes OpenCode to diagnose and fix the code,
+When a target fails, invokes Claude to diagnose and fix the code,
 then sets fix_pushed=true in receiver-state.json so the sender retries.
 
 File ownership:
@@ -22,8 +22,8 @@ import lib
 
 REPO = lib.repo_root()
 POLL_INTERVAL = int(os.environ.get("LOOP_POLL_INTERVAL", "10"))  # seconds between polls
-MAX_ERRORS = 3  # unclear OpenCode responses before force-unblocking
-TIMEOUT_SECS = 1800  # 30 min max per OpenCode invocation
+MAX_ERRORS = 3  # unclear Claude responses before force-unblocking
+TIMEOUT_SECS = 1800  # 30 min max per Claude invocation
 
 
 # ---------------------------------------------------------------------------
@@ -31,14 +31,14 @@ TIMEOUT_SECS = 1800  # 30 min max per OpenCode invocation
 # ---------------------------------------------------------------------------
 
 
-def should_invoke_opencode(
+def should_invoke_claude(
     sender_state: dict,
     receiver_state: dict,
     last_processed_log: str,
     latest_log: str,
 ) -> tuple[bool, str]:
     """
-    Decide whether to invoke OpenCode for the current failure.
+    Decide whether to invoke Claude for the current failure.
 
     Returns (should_invoke, reason_if_not).
     Pure function — no I/O, fully testable.
@@ -74,7 +74,7 @@ def should_invoke_opencode(
     return True, ""
 
 
-def build_opencode_prompt(
+def build_claude_prompt(
     target: str,
     latest_log: str,
     log_content: str,
@@ -82,8 +82,8 @@ def build_opencode_prompt(
     repo: "Path" = None,
 ) -> str:
     """
-    Build the OpenCode prompt for a failed target.
-    Uses absolute paths so OpenCode reads the correct files regardless of
+    Build the Claude prompt for a failed target.
+    Uses absolute paths so Claude reads the correct files regardless of
     its own session working directory.
     repo is optional for backwards compatibility with existing tests.
     """
@@ -190,25 +190,25 @@ def notify_human(sender_state: dict, target: str, latest_log: str) -> None:
 
 
 def gather_previous_logs(runs_dir: Path, target: str, logs: list) -> str:
-    """Gather content from previous run logs and last OpenCode log for context.
+    """Gather content from previous run logs and last Claude log for context.
 
     runs_dir is expected to be runs/logs/ (target logs).
-    OpenCode invocation logs live one level up in runs/.
+    Claude invocation logs live one level up in runs/.
     """
     prev = ""
     for pf in list(logs[1:4]):
         prev += f"\n--- Previous run log for {target}: {pf.name} ---\n"
         prev += pf.read_text(errors="replace")[-3000:]
 
-    # OpenCode logs live in runs/ (parent of runs/logs/)
+    # Claude logs live in runs/ (parent of runs/logs/)
     oc_log_dir = runs_dir.parent
     oc_logs = sorted(
-        oc_log_dir.glob("opencode-loop-*.log"),
+        oc_log_dir.glob("claude-loop-*.log"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     if oc_logs:
-        prev += f"\n--- Last OpenCode invocation ({oc_logs[0].name}) ---\n"
+        prev += f"\n--- Last Claude invocation ({oc_logs[0].name}) ---\n"
         prev += oc_logs[0].read_text(errors="replace")[-2000:]
 
     return prev
@@ -277,8 +277,8 @@ def main() -> None:
         )
         latest_log = logs[0].name if logs else ""
 
-        # ── Decide whether to invoke OpenCode ───────────────────────────────
-        should_invoke, reason = should_invoke_opencode(
+        # ── Decide whether to invoke Claude ─────────────────────────────────
+        should_invoke, reason = should_invoke_claude(
             sender, receiver, last_processed_log, latest_log
         )
 
@@ -289,20 +289,20 @@ def main() -> None:
             time.sleep(POLL_INTERVAL)
             continue
 
-        lib.log(f"⚡ {target} failed — invoking OpenCode to fix (log: {latest_log})")
+        lib.log(f"⚡ {target} failed — invoking Claude to fix (log: {latest_log})")
         last_processed_log = latest_log
         oc_logs_dir = REPO / "runs"
         oc_logs_dir.mkdir(exist_ok=True)
-        oc_log = oc_logs_dir / f"opencode-loop-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        oc_log = oc_logs_dir / f"claude-loop-{time.strftime('%Y%m%d-%H%M%S')}.log"
 
         prev_logs_content = gather_previous_logs(runs_dir, target, logs)
         log_content = logs[0].read_text(errors="replace") if logs else ""
-        prompt = build_opencode_prompt(
+        prompt = build_claude_prompt(
             target, latest_log, log_content, prev_logs_content, repo=REPO
         )
 
         result = subprocess.run(
-            ["opencode", "run", "--dangerously-skip-permissions", prompt],
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECS,
@@ -319,11 +319,11 @@ def main() -> None:
                 [sys.executable, str(trim_script)], cwd=str(REPO), capture_output=True
             )
 
-        # Commit OpenCode log and context (receiver owns these)
+        # Commit Claude log and context (receiver owns these)
         lib.git(
             REPO, "add", str(oc_log), "loop-context.md", "docs/loop-context-archive.md"
         )
-        lib.git(REPO, "commit", "-m", f"loop: opencode log for {target}")
+        lib.git(REPO, "commit", "-m", f"loop: claude log for {target}")
         lib.git(
             REPO,
             "pull",
@@ -338,17 +338,17 @@ def main() -> None:
         lib.git(REPO, "push", "origin", branch)
 
         last_word = lib.parse_last_word(output)
-        lib.log(f"OpenCode result: '{last_word or 'UNCLEAR'}'")
+        lib.log(f"Claude result: '{last_word or 'UNCLEAR'}'")
 
         if last_word in ("SUCCESS", "RETRY"):
-            set_fix_pushed(REPO, branch, f"{target} fixed by OpenCode")
+            set_fix_pushed(REPO, branch, f"{target} fixed by Claude")
             errors = 0
             lib.log_ok(f"{target} — fix pushed, sender will retry")
         elif last_word == "NEEDS_HUMAN":
-            lib.log_fail(f"{target} — OpenCode cannot fix automatically")
+            lib.log_fail(f"{target} — Claude cannot fix automatically")
             sender = lib.load_sender_state(REPO)
             sender["human_action"] = (
-                f"OpenCode could not fix {target} automatically. "
+                f"Claude could not fix {target} automatically. "
                 f"Check runs/logs/{latest_log}. Fix manually then run: make loop-reset"
             )
             sender["status"] = "needs_human"
@@ -373,7 +373,7 @@ def main() -> None:
         else:
             errors += 1
             lib.log_fail(
-                f"OpenCode output unclear ({errors}/{MAX_ERRORS} unclear responses)"
+                f"Claude output unclear ({errors}/{MAX_ERRORS} unclear responses)"
             )
             if errors >= MAX_ERRORS:
                 lib.log_fail(

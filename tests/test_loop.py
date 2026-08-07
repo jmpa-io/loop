@@ -526,7 +526,7 @@ class TestCheckHardwareBlocker(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: OpenCode result parsing
+# Unit: Claude result parsing
 # ===========================================================================
 
 
@@ -595,15 +595,15 @@ class TestStateIO(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: receiver -- should_invoke_opencode (pure function)
+# Unit: receiver -- should_invoke_claude (pure function)
 # ===========================================================================
 
 
-class TestShouldInvokeOpencode(unittest.TestCase):
+class TestShouldInvokeClaude(unittest.TestCase):
     def setUp(self):
         import receiver as opencode_loop
 
-        self.fn = opencode_loop.should_invoke_opencode
+        self.fn = opencode_loop.should_invoke_claude
 
     def _sender(
         self, status="running", last_result="failed", target="build", completed=None
@@ -676,15 +676,15 @@ class TestShouldInvokeOpencode(unittest.TestCase):
 
 
 # ===========================================================================
-# Unit: receiver -- build_opencode_prompt (pure function)
+# Unit: receiver -- build_claude_prompt (pure function)
 # ===========================================================================
 
 
-class TestBuildOpencodePrompt(unittest.TestCase):
+class TestBuildClaudePrompt(unittest.TestCase):
     def setUp(self):
         import receiver as opencode_loop
 
-        self.fn = opencode_loop.build_opencode_prompt
+        self.fn = opencode_loop.build_claude_prompt
 
     def test_contains_target_name(self):
         prompt = self.fn("my-target", "my-target-123.log", "log content", "")
@@ -1282,9 +1282,9 @@ class TestStateSchema(unittest.TestCase):
             "waiting_for_fix should not exist — receiver infers from sender-state.json",
         )
 
-    def test_receiver_state_does_not_have_opencode_last_fix(self):
+    def test_receiver_state_does_not_have_claude_last_fix(self):
         data = json.loads((LOOP_REPO / "receiver-state.json").read_text())
-        self.assertNotIn("opencode_last_fix", data, "old field — replaced by last_fix")
+        self.assertNotIn("opencode_last_fix", data, "legacy field — replaced by last_fix")
 
 
 # ===========================================================================
@@ -1341,7 +1341,7 @@ class TestGatherPreviousLogs(unittest.TestCase):
         return p
 
     def _make_oc_log(self, name, content):
-        """Create an opencode log in runs/ (parent of runs/logs/)."""
+        """Create a claude log in runs/ (parent of runs/logs/)."""
         p = self.runs_dir.parent / name
         p.write_text(content)
         return p
@@ -1362,13 +1362,13 @@ class TestGatherPreviousLogs(unittest.TestCase):
         result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
         self.assertIn("second run", result)
 
-    def test_includes_opencode_log_if_present(self):
+    def test_includes_claude_log_if_present(self):
         import receiver as opencode_loop
 
-        self._make_oc_log("opencode-loop-20240101.log", "opencode output here")
+        self._make_oc_log("claude-loop-20240101.log", "claude output here")
         logs = [self._make_log("build-001.log", "main log")]
         result = opencode_loop.gather_previous_logs(self.runs_dir, "build", logs)
-        self.assertIn("opencode output here", result)
+        self.assertIn("claude output here", result)
 
     def test_max_3_prev_logs(self):
         import receiver as opencode_loop
@@ -1487,7 +1487,7 @@ class TestLoopMainSignals(unittest.TestCase):
 # ===========================================================================
 
 
-class TestOpencodeLoopMain(unittest.TestCase):
+class TestClaudeLoopMain(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.repo = _make_git_repo(Path(self.tmp) / "repo")
@@ -1555,7 +1555,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
             "failed_targets": [],
         }
         receiver = {"fix_pushed": False}
-        ok, reason = opencode_loop.should_invoke_opencode(
+        ok, reason = opencode_loop.should_invoke_claude(
             sender, receiver, "", "a-001.log"
         )
         self.assertFalse(ok)
@@ -1564,12 +1564,12 @@ class TestOpencodeLoopMain(unittest.TestCase):
         # Verify via pure function — empty sender state means nothing to fix
         import receiver as opencode_loop
 
-        ok, reason = opencode_loop.should_invoke_opencode(
+        ok, reason = opencode_loop.should_invoke_claude(
             {}, {"fix_pushed": False}, "", ""
         )
         self.assertFalse(ok)
 
-    def test_should_invoke_opencode_true_for_failed_target_with_log(self):
+    def test_should_invoke_claude_true_for_failed_target_with_log(self):
         # Verify the decision function returns True for a real failure with a log
         import receiver as opencode_loop
 
@@ -1585,7 +1585,7 @@ class TestOpencodeLoopMain(unittest.TestCase):
             "failed_targets": [],
         }
         receiver = {"fix_pushed": False}
-        ok, reason = opencode_loop.should_invoke_opencode(
+        ok, reason = opencode_loop.should_invoke_claude(
             sender, receiver, "", "a-20240101-120000.log"
         )
         self.assertTrue(ok, f"Expected should_invoke=True, got reason: {reason}")
@@ -2460,10 +2460,10 @@ class TestReceiverMainLoop(unittest.TestCase):
 
         self.assertGreaterEqual(notify_calls[0], 1)
 
-    # ── Lines 269-295 + 343: OpenCode invoked → RETRY → fix_pushed=true ─────
+    # ── Lines 269-295 + 343: Claude invoked → RETRY → fix_pushed=true ──────────
 
-    def test_opencode_invoked_for_failed_target_retry(self):
-        """Full path: failed target with log → OpenCode called → RETRY → fix_pushed."""
+    def test_claude_invoked_for_failed_target_retry(self):
+        """Full path: failed target with log → Claude called → RETRY → fix_pushed."""
         import receiver as rx
 
         self._write_log("a", "20260101-120000", "Error: something broke")
@@ -2477,7 +2477,7 @@ class TestReceiverMainLoop(unittest.TestCase):
         opencode_called = [False]
 
         def sp(cmd, **kw):
-            if isinstance(cmd, list) and any("opencode" in str(c) for c in cmd):
+            if isinstance(cmd, list) and any("claude" in str(c) for c in cmd):
                 opencode_called[0] = True
             m = MagicMock()
             m.stdout = "RETRY"
@@ -2487,14 +2487,14 @@ class TestReceiverMainLoop(unittest.TestCase):
 
         self._run(rx, stop_after_pulls=3, subprocess_se=sp)
 
-        self.assertTrue(opencode_called[0], "OpenCode should have been invoked")
+        self.assertTrue(opencode_called[0], "Claude should have been invoked")
         rc = lib.load_receiver_state(self.repo)
         self.assertTrue(rc.get("fix_pushed"), "fix_pushed should be True after RETRY")
 
     # ── Lines 347-371: NEEDS_HUMAN → sender updated ──────────────────────────
 
-    def test_opencode_needs_human_sets_status(self):
-        """OpenCode returns NEEDS_HUMAN → receiver writes needs_human to sender-state."""
+    def test_claude_needs_human_sets_status(self):
+        """Claude returns NEEDS_HUMAN → receiver writes needs_human to sender-state."""
         import receiver as rx
 
         self._write_log("a", "20260101-130000", "Error: needs human")
@@ -2528,7 +2528,7 @@ class TestReceiverMainLoop(unittest.TestCase):
 
     # ── Lines 374-387: unclear → forced fix_pushed after MAX_ERRORS ──────────
 
-    def test_opencode_unclear_forces_fix_pushed(self):
+    def test_claude_unclear_forces_fix_pushed(self):
         """After MAX_ERRORS unclear responses, fix_pushed is forced True."""
         import receiver as rx
 
@@ -2557,8 +2557,8 @@ class TestReceiverMainLoop(unittest.TestCase):
 
     # ── SUCCESS result ────────────────────────────────────────────────────────
 
-    def test_opencode_success_sets_fix_pushed(self):
-        """OpenCode returns SUCCESS → fix_pushed=True."""
+    def test_claude_success_sets_fix_pushed(self):
+        """Claude returns SUCCESS → fix_pushed=True."""
         import receiver as rx
 
         self._write_log("a", "20260101-150000", "All good")
@@ -2577,7 +2577,7 @@ class TestReceiverMainLoop(unittest.TestCase):
     # ── Standing by on non-failure ────────────────────────────────────────────
 
     def test_stands_by_on_non_failure_status(self):
-        """OpenCode is NOT invoked when last_result is not failed."""
+        """Claude is NOT invoked when last_result is not failed."""
         import receiver as rx
 
         s = lib.load_sender_state(self.repo)
@@ -2589,7 +2589,7 @@ class TestReceiverMainLoop(unittest.TestCase):
         invoke_count = [0]
 
         def sp(cmd, **kw):
-            if isinstance(cmd, list) and any("opencode" in str(c) for c in cmd):
+            if isinstance(cmd, list) and any("claude" in str(c) for c in cmd):
                 invoke_count[0] += 1
             m = MagicMock()
             m.stdout = ""
@@ -2599,7 +2599,7 @@ class TestReceiverMainLoop(unittest.TestCase):
 
         self._run(rx, stop_after_pulls=3, subprocess_se=sp)
 
-        self.assertEqual(0, invoke_count[0], "OpenCode must NOT be invoked for non-failure")
+        self.assertEqual(0, invoke_count[0], "Claude must NOT be invoked for non-failure")
 
     # ── POLL_INTERVAL from env var (line 72) ─────────────────────────────────
 
