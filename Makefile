@@ -18,18 +18,18 @@ loop-start-sender:
 	fi
 	@SESSION="homelab-loop"; \
 	SCRIPT="$(LOOP_DIR)bin/sender_resilient.py"; \
-	export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
+	TMUX="tmux -L default"; \
 	if pgrep -f "sender_resilient.py" > /dev/null 2>&1; then \
 		echo "Sender loop is already running (PID: $$(pgrep -f sender_resilient.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
-	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
+	elif $$TMUX has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \
-		tmux kill-session -t "$$SESSION" 2>/dev/null || true; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		$$TMUX kill-session -t "$$SESSION" 2>/dev/null || true; \
+		$$TMUX new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
 		echo "Sender started. Run 'make loop-attach' to watch it."; \
 	else \
 		echo "Starting sender loop..."; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		$$TMUX new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
 		echo "Sender started. Run 'make loop-attach' to watch it."; \
 	fi
 
@@ -41,28 +41,28 @@ loop-start-receiver:
 	fi
 	@SESSION="homelab-loop-receiver"; \
 	SCRIPT="$(LOOP_DIR)bin/receiver.py"; \
-	export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
+	TMUX="tmux -L default"; \
 	if pgrep -f "receiver.py" > /dev/null 2>&1; then \
 		echo "Receiver loop is already running (PID: $$(pgrep -f receiver.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
-	elif tmux has-session -t "$$SESSION" 2>/dev/null; then \
+	elif $$TMUX has-session -t "$$SESSION" 2>/dev/null; then \
 		echo "Stale tmux session found — killing and restarting..."; \
-		tmux kill-session -t "$$SESSION" 2>/dev/null || true; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		$$TMUX kill-session -t "$$SESSION" 2>/dev/null || true; \
+		$$TMUX new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
 		echo "Receiver started. Run 'make loop-attach' to watch it."; \
 	else \
 		echo "Starting receiver loop..."; \
-		tmux new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
+		$$TMUX new-session -d -s "$$SESSION" -c "$$PWD" "python3 $$SCRIPT"; \
 		echo "Receiver started. Run 'make loop-attach' to watch it."; \
 	fi
 
 loop-attach: ## Loop: attach to the running tmux session to watch output.
 loop-attach:
-	@export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
-	if tmux has-session -t homelab-loop 2>/dev/null; then \
-		tmux attach -t homelab-loop; \
-	elif tmux has-session -t homelab-loop-receiver 2>/dev/null; then \
-		tmux attach -t homelab-loop-receiver; \
+	@TMUX="tmux -L default"; \
+	if $$TMUX has-session -t homelab-loop 2>/dev/null; then \
+		$$TMUX attach -t homelab-loop; \
+	elif $$TMUX has-session -t homelab-loop-receiver 2>/dev/null; then \
+		$$TMUX attach -t homelab-loop-receiver; \
 	else \
 		echo "No loop session running. Run 'make loop-start-sender' or 'make loop-start-receiver' first."; \
 	fi
