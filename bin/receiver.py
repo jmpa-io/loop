@@ -346,10 +346,10 @@ def main() -> None:
             errors = 0
             lib.log_ok(f"{target} — fix pushed, sender will retry")
         elif last_word == "NEEDS_HUMAN":
-            lib.log_fail(f"{target} — Claude cannot fix automatically")
+            lib.log_fail(f"{target} — AI could not fix automatically")
             sender = lib.load_sender_state(REPO)
             sender["human_action"] = (
-                f"Claude could not fix {target} automatically. "
+                f"Remote AI could not fix {target} automatically. "
                 f"Check runs/logs/{latest_log}. Fix manually then run: make loop-reset"
             )
             sender["status"] = "needs_human"

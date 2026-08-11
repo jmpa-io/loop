@@ -18,6 +18,7 @@ loop-start-sender:
 	fi
 	@SESSION="homelab-loop"; \
 	SCRIPT="$(LOOP_DIR)bin/sender_resilient.py"; \
+	export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
 	if pgrep -f "sender_resilient.py" > /dev/null 2>&1; then \
 		echo "Sender loop is already running (PID: $$(pgrep -f sender_resilient.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
@@ -40,6 +41,7 @@ loop-start-receiver:
 	fi
 	@SESSION="homelab-loop-receiver"; \
 	SCRIPT="$(LOOP_DIR)bin/receiver.py"; \
+	export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
 	if pgrep -f "receiver.py" > /dev/null 2>&1; then \
 		echo "Receiver loop is already running (PID: $$(pgrep -f receiver.py | tr '\n' ' '))"; \
 		echo "Use 'make loop-attach' to watch it, or 'make loop-stop' to stop it first."; \
@@ -56,7 +58,8 @@ loop-start-receiver:
 
 loop-attach: ## Loop: attach to the running tmux session to watch output.
 loop-attach:
-	@if tmux has-session -t homelab-loop 2>/dev/null; then \
+	@export TMUX_TMPDIR=$${TMUX_TMPDIR:-/tmp}; \
+	if tmux has-session -t homelab-loop 2>/dev/null; then \
 		tmux attach -t homelab-loop; \
 	elif tmux has-session -t homelab-loop-receiver 2>/dev/null; then \
 		tmux attach -t homelab-loop-receiver; \
