@@ -179,14 +179,15 @@ def notify_human(sender_state: dict, target: str, latest_log: str) -> None:
     print("════════════════════════════════════════════════════════════")
     print("  Once done, run: make loop-reset")
     print("════════════════════════════════════════════════════════════")
-    subprocess.run(
-        [
-            "osascript",
-            "-e",
-            f'display notification "{human_action}" with title "Loop" subtitle "Action Required" sound name "Sosumi"',
-        ],
-        capture_output=True,
-    )
+    if sys.platform == "darwin":
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f'display notification "{human_action}" with title "Loop" subtitle "Action Required" sound name "Sosumi"',
+            ],
+            capture_output=True,
+        )
 
 
 def gather_previous_logs(runs_dir: Path, target: str, logs: list) -> str:
