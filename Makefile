@@ -10,6 +10,22 @@
 # Path to this Makefile's directory — works whether included or run directly.
 LOOP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
+loop-debug: ## Loop: print shell/tmux diagnostics to help debug make loop-start-* failures.
+loop-debug:
+	@echo "=== loop-debug ==="
+	@echo "SHELL        : $$(command -v sh) -> $$(/bin/sh --version 2>&1 | head -1 || echo unknown)"
+	@echo "make SHELL   : $(SHELL)"
+	@echo "tmux version : $$(tmux -V 2>&1 || echo 'tmux not found')"
+	@echo "tmux socket  : $$(tmux -L default ls 2>&1 || echo 'no sessions')"
+	@echo "pgrep sender : $$(pgrep -fa sender_resilient.py 2>/dev/null || echo 'not running')"
+	@echo "pgrep recvr  : $$(pgrep -fa receiver.py 2>/dev/null || echo 'not running')"
+	@echo "LOOP_DIR     : $(LOOP_DIR)"
+	@echo "PWD          : $$PWD"
+	@echo "tmux new-session test:"
+	@tmux -L default new-session -d -s loop-debug-test "sleep 5" 2>&1 && echo "  OK — session created" || echo "  FAIL — could not create session"
+	@tmux -L default kill-session -t loop-debug-test 2>/dev/null || true
+	@echo "=================="
+
 loop-start-sender: ## Loop: start the sender. Optionally pass TARGETS="build test deploy" to set targets first.
 loop-start-sender:
 	@if [ -n "$(TARGETS)" ]; then \
@@ -100,4 +116,4 @@ loop-test:
 	@python3 $(LOOP_DIR)tests/test_loop.py
 	@python3 $(LOOP_DIR)tests/test_integration.py
 
-.PHONY += loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-targets loop-status loop-reset loop-ack loop-test
+.PHONY += loop-debug loop-start-sender loop-start-receiver loop-attach loop-stop loop-pause loop-targets loop-status loop-reset loop-ack loop-test
